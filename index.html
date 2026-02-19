@@ -173,7 +173,6 @@
             const [notes, setNotes] = useState({});
             const [shifts, setShifts] = useState(DEFAULT_SHIFTS);
             
-            // Reaktivierte State-Variablen
             const [columnOrder, setColumnOrder] = useState(['status', 'soll', 'ist', 'diff', 'prev']);
             const [currentDate, setCurrentDate] = useState(new Date(2026, 3, 1));
             const [activeShift, setActiveShift] = useState('FD');
@@ -188,7 +187,12 @@
             const [dragItem, setDragItem] = useState(null);
             const [editingEmp, setEditingEmp] = useState(null);
 
-            // Lokaler State für das Hinzufügen von Diensten
+            // Spezifische Modals für sichere Eingaben ohne window.prompt / window.confirm
+            const [noteModal, setNoteModal] = useState({ isOpen: false, empId: null, date: null, currentNote: '' });
+            const [newEmpModal, setNewEmpModal] = useState(false);
+            const [newEmpName, setNewEmpName] = useState('');
+            const [shiftToDelete, setShiftToDelete] = useState(null);
+
             const [newShiftCode, setNewShiftCode] = useState('');
             const [newShiftLabel, setNewShiftLabel] = useState('');
             const [newShiftHours, setNewShiftHours] = useState('7.7');
@@ -273,15 +277,7 @@
                 
                 if (activeShift === 'NOTE') {
                     const currentNote = (notes[empId] || {})[dateKey] || "";
-                    const text = prompt(`Notiz für ${date.toLocaleDateString()}:`, currentNote);
-                    if (text !== null) {
-                        setNotes(prev => {
-                            const empNotes = { ...(prev[empId] || {}) };
-                            if (text === "") delete empNotes[dateKey];
-                            else empNotes[dateKey] = text;
-                            return { ...prev, [empId]: empNotes };
-                        });
-                    }
+                    setNoteModal({ isOpen: true, empId, date, currentNote });
                 } else {
                     setRoster(prev => {
                         const empRost = { ...(prev[empId] || {}) };
@@ -348,11 +344,7 @@
             };
 
             const deleteShift = (code) => {
-                if (!window.confirm(`Möchtest du den Dienst "${code}" wirklich löschen?`)) return;
-                const s = { ...shifts };
-                delete s[code];
-                setShifts(s);
-                if (activeShift === code) setActiveShift('FD');
+                setShiftToDelete(code);
             };
 
             // Farb-Thema Variablen
@@ -469,7 +461,7 @@
                                                     const counts = getDayCounts(day);
                                                     const isH = !!holidays[k];
                                                     const isW = day.getDay() === 0 || day.getDay() === 6;
-                                                    // Warnung jetzt auch am Wochenende aktiv (isW Bedingung entfernt)
+                                                    // Warnung jetzt auch am Wochenende aktiv
                                                     const lowStaff = (counts.FD < 2 || counts.SD < 2 || counts.ND < 2);
                                                     return (
                                                         <th key={k} className={`p-2 border-b ${isDarkMode ? 'border-white/10' : 'border-slate-200'} min-w-[70px] ${isH ? 'bg-amber-500/20' : isW ? 'bg-blue-500/10' : ''}`}>
@@ -555,7 +547,91 @@
 
                     {/* --- MODALS --- */}
                     
-                    {/* 1. Yearly Overview Modal */}
+                    {/* Note Edit Modal */}
+                    {noteModal.isOpen && (
+                        <div className="fixed inset-0 z-[600] flex items-center justify-center p-4">
+                            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setNoteModal({ isOpen: false, empId: null, date: null, currentNote: '' })}></div>
+                            <div className={`relative ${isDarkMode ? 'bg-[#0f172a] border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'} border rounded-[32px] w-full max-w-sm p-8 shadow-2xl animate-in zoom-in duration-200`}>
+                                <h2 className="text-xl font-black mb-4 uppercase">Notiz für {noteModal.date?.toLocaleDateString()}</h2>
+                                <textarea 
+                                    value={noteModal.currentNote} 
+                                    onChange={(e) => setNoteModal({...noteModal, currentNote: e.target.value})} 
+                                    className={`w-full border rounded-xl p-3 outline-none focus:border-amber-500 transition-all text-sm min-h-[100px] ${isDarkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
+                                    placeholder="Notiz eingeben..."
+                                    autoFocus
+                                />
+                                <div className="flex gap-3 mt-6">
+                                    <button onClick={() => setNoteModal({ isOpen: false, empId: null, date: null, currentNote: '' })} className={`flex-1 py-3 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${isDarkMode ? 'bg-white/5 hover:bg-white/10' : 'bg-slate-100 hover:bg-slate-200'}`}>Abbrechen</button>
+                                    <button onClick={() => {
+                                        const dateKey = noteModal.date.toISOString().split('T')[0];
+                                        const text = noteModal.currentNote.trim();
+                                        setNotes(prev => {
+                                            const empNotes = { ...(prev[noteModal.empId] || {}) };
+                                            if (text === "") delete empNotes[dateKey];
+                                            else empNotes[dateKey] = text;
+                                            return { ...prev, [noteModal.empId]: empNotes };
+                                        });
+                                        setNoteModal({ isOpen: false, empId: null, date: null, currentNote: '' });
+                                    }} className="flex-1 py-3 bg-amber-500 hover:bg-amber-400 rounded-xl font-black uppercase text-xs tracking-widest text-white shadow-lg shadow-amber-500/30">Speichern</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* New Employee Modal */}
+                    {newEmpModal && (
+                        <div className="fixed inset-0 z-[600] flex items-center justify-center p-4">
+                            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setNewEmpModal(false)}></div>
+                            <div className={`relative ${isDarkMode ? 'bg-[#0f172a] border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'} border rounded-[32px] w-full max-w-sm p-8 shadow-2xl animate-in zoom-in duration-200`}>
+                                <h2 className="text-xl font-black mb-4 uppercase">Neuer Kollege</h2>
+                                <input 
+                                    value={newEmpName} 
+                                    onChange={(e) => setNewEmpName(e.target.value)} 
+                                    className={`w-full border rounded-xl p-3 outline-none focus:border-emerald-500 transition-all text-sm mb-6 ${isDarkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
+                                    placeholder="Name, Vorname"
+                                    autoFocus
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && newEmpName.trim()) {
+                                            setEmployees([...employees, { id: Date.now().toString(), name: newEmpName.trim(), role: 'Pflegekraft', status: '100', prevOvertime: 0 }]);
+                                            setNewEmpModal(false);
+                                        }
+                                    }}
+                                />
+                                <div className="flex gap-3">
+                                    <button onClick={() => setNewEmpModal(false)} className={`flex-1 py-3 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${isDarkMode ? 'bg-white/5 hover:bg-white/10' : 'bg-slate-100 hover:bg-slate-200'}`}>Abbrechen</button>
+                                    <button onClick={() => {
+                                        if (newEmpName.trim()) {
+                                            setEmployees([...employees, { id: Date.now().toString(), name: newEmpName.trim(), role: 'Pflegekraft', status: '100', prevOvertime: 0 }]);
+                                            setNewEmpModal(false);
+                                        }
+                                    }} className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-400 rounded-xl font-black uppercase text-xs tracking-widest text-white shadow-lg shadow-emerald-500/30">Anlegen</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Delete Shift Confirm Modal */}
+                    {shiftToDelete && (
+                        <div className="fixed inset-0 z-[600] flex items-center justify-center p-4">
+                            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShiftToDelete(null)}></div>
+                            <div className={`relative ${isDarkMode ? 'bg-[#0f172a] border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'} border rounded-[32px] w-full max-w-sm p-8 shadow-2xl animate-in zoom-in duration-200`}>
+                                <h2 className="text-xl font-black mb-2 uppercase text-rose-500">Dienst löschen?</h2>
+                                <p className={`text-sm mb-6 ${isDarkMode ? 'text-slate-400' : 'text-slate-600'}`}>Möchtest du den Dienst "{shiftToDelete}" wirklich dauerhaft entfernen?</p>
+                                <div className="flex gap-3">
+                                    <button onClick={() => setShiftToDelete(null)} className={`flex-1 py-3 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${isDarkMode ? 'bg-white/5 hover:bg-white/10' : 'bg-slate-100 hover:bg-slate-200'}`}>Abbrechen</button>
+                                    <button onClick={() => {
+                                        const s = { ...shifts };
+                                        delete s[shiftToDelete];
+                                        setShifts(s);
+                                        if (activeShift === shiftToDelete) setActiveShift('FD');
+                                        setShiftToDelete(null);
+                                    }} className="flex-1 py-3 bg-rose-600 hover:bg-rose-500 rounded-xl font-black uppercase text-xs tracking-widest text-white shadow-lg shadow-rose-600/30">Löschen</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Yearly Overview Modal */}
                     {isYearOpen && (
                         <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
                             <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setIsYearOpen(false)}></div>
@@ -573,7 +649,7 @@
                         </div>
                     )}
 
-                    {/* 2. Settings Modal */}
+                    {/* Settings Modal */}
                     {isSettingsOpen && (
                         <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
                             <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setIsSettingsOpen(false)}></div>
@@ -585,7 +661,7 @@
                                 <div className="space-y-8">
                                     <div>
                                         <p className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Kollegen Management</p>
-                                        <button onClick={() => { const n = prompt("Name, Vorname:"); if (n) setEmployees([...employees, { id: Date.now().toString(), name: n, role: 'Pflegekraft', status: '100', prevOvertime: 0 }]); }} className="w-full py-4 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 rounded-2xl font-black text-xs uppercase flex items-center justify-center gap-2 hover:bg-emerald-500/20 transition-all">
+                                        <button onClick={() => { setIsSettingsOpen(false); setNewEmpName(''); setNewEmpModal(true); }} className="w-full py-4 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 rounded-2xl font-black text-xs uppercase flex items-center justify-center gap-2 hover:bg-emerald-500/20 transition-all">
                                             <Icon name="user-plus" size={16}/> Neuen Kollegen anlegen
                                         </button>
                                     </div>
@@ -608,7 +684,7 @@
                                                     <input className={`w-12 font-black text-[10px] bg-transparent outline-none text-center ${cfg.color} ${cfg.textColor} rounded`} value={code} disabled />
                                                     <input className="flex-1 font-bold text-xs bg-transparent outline-none" value={cfg.label} onChange={(e) => updateShift(code, 'label', e.target.value)} />
                                                     <input type="number" step="0.1" className="w-14 font-mono text-xs bg-transparent outline-none text-right" value={cfg.hours} onChange={(e) => updateShift(code, 'hours', parseFloat(e.target.value))} />
-                                                    <button onClick={() => deleteShift(code)} className="p-1 text-slate-500 hover:text-rose-500 transition-colors"><Icon name="trash-2" size={14}/></button>
+                                                    <button onClick={() => { setIsSettingsOpen(false); deleteShift(code); }} className="p-1 text-slate-500 hover:text-rose-500 transition-colors"><Icon name="trash-2" size={14}/></button>
                                                 </div>
                                             ))}
                                         </div>
@@ -627,7 +703,7 @@
                         </div>
                     )}
 
-                    {/* 3. Info Modal */}
+                    {/* Info Modal */}
                     {isInfoOpen && (
                         <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
                             <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setIsInfoOpen(false)}></div>
@@ -676,7 +752,7 @@
                         </div>
                     )}
 
-                    {/* 4. Employee Edit Modal */}
+                    {/* Employee Edit Modal */}
                     {editingEmp && (
                         <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
                             <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setEditingEmp(null)}></div>
