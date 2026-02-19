@@ -10,12 +10,19 @@ import {
   Monitor, Smartphone, X, Edit3, Check
 } from 'lucide-react';
 
-// --- Firebase Setup ---
+/**
+ * --- HINWEIS FÜR GITHUB / LOKALE ENTWICKLUNG ---
+ * Für die lokale Entwicklung kannst du das folgende Objekt mit deinen Daten füllen:
+ * const firebaseConfig = { apiKey: "...", ... };
+ * * Hier nutzen wir die Systemvariable, damit die Vorschau direkt funktioniert.
+ */
 const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'helios-notaufnahme-duisburg';
+
+// Die App-ID für die Datenbank-Pfade
+const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'helios-notaufnahme-duisburg';
 
 // --- Hilfslogik für NRW-Feiertage ---
 const getHolidaysNRW = (year) => {
@@ -105,7 +112,7 @@ const App = () => {
   // --- Echtzeit-Sync ---
   useEffect(() => {
     if (!user) return;
-    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rosterPlan', 'main');
+    const docRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rosterPlan', 'main');
     const unsub = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -124,7 +131,7 @@ const App = () => {
     if (!user) return;
     setIsSyncing(true);
     try {
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rosterPlan', 'main');
+      const docRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rosterPlan', 'main');
       await setDoc(docRef, {
         employees, roster, notes, shifts, shiftOrder, columnOrder,
         updatedAt: serverTimestamp()
@@ -133,7 +140,6 @@ const App = () => {
     setTimeout(() => setIsSyncing(false), 800);
   };
 
-  // --- Hilfsfunktionen für Berechnungen ---
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   const holidays = useMemo(() => getHolidaysNRW(year), [year]);
@@ -195,7 +201,6 @@ const App = () => {
     return counts;
   };
 
-  // --- Drag & Drop Funktionen ---
   const handleDragStart = (e, type, index) => {
     if (!isEditMode) return e.preventDefault();
     setDragItem({ type, index });
@@ -440,7 +445,6 @@ const App = () => {
         </main>
       </div>
 
-      {/* Jahr Modal */}
       {isYearOpen && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsYearOpen(false)}></div>
@@ -462,7 +466,6 @@ const App = () => {
         </div>
       )}
 
-      {/* Einstellungen Modal */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsSettingsOpen(false)}></div>
@@ -501,7 +504,6 @@ const App = () => {
         </div>
       )}
 
-      {/* Info Modal */}
       {isInfoOpen && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsInfoOpen(false)}></div>
@@ -524,20 +526,6 @@ const App = () => {
                   <ul className="list-disc pl-4 space-y-1 opacity-80">
                     <li>NRW-Feiertage werden live berechnet</li>
                     <li>Warnsymbol bei Besetzung unter 3 Personen (FD/SD)</li>
-                  </ul>
-                </section>
-                <section>
-                  <h3 className="font-black uppercase text-white mb-2 flex items-center gap-2"><Layout className="text-amber-400" size={14}/> 3. Bedienung</h3>
-                  <ul className="list-disc pl-4 space-y-1 opacity-80">
-                    <li>Notiz-Inline-Funktion (direkt sichtbar)</li>
-                    <li>Zoom-Regler für jede Monitorgröße</li>
-                  </ul>
-                </section>
-                <section>
-                  <h3 className="font-black uppercase text-white mb-2 flex items-center gap-2"><Edit3 className="text-emerald-400" size={14}/> 4. Management</h3>
-                  <ul className="list-disc pl-4 space-y-1 opacity-80">
-                    <li>Mitarbeiter per Drag & Drop sortieren</li>
-                    <li>Jahresansicht für schnellen Monatswechsel</li>
                   </ul>
                 </section>
               </div>
