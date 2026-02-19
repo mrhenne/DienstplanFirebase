@@ -1,647 +1,465 @@
-<!DOCTYPE html>
-<html lang="de">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Dienstplan Pro - Helios Notaufnahme</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { 
+  Users, Calendar, ChevronLeft, ChevronRight, Clock, Sun, Moon, Coffee, 
+  XCircle, Plane, Printer, Save, Info, BookOpen, AlertTriangle, Lock, 
+  Unlock, Maximize, Minimize, Cloud, FileText, Settings, Search, Layout,
+  Trash2, UserPlus, GripVertical, StickyNote, Palette, ListFilter,
+  Monitor, Smartphone, X
+} from 'lucide-react';
+
+// --- Firebase Initialisierung (Gemäß System-Vorgaben) ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'helios-notaufnahme-duisburg';
+
+// --- Hilfsfunktionen für NRW-Feiertage ---
+const getHolidaysNRW = (year) => {
+  const f = Math.floor, G = year % 19, C = f(year / 100), H = (C - f(C / 4) - f((8 * C + 13) / 25) + 19 * G + 15) % 30, 
+        I = H - f(H / 28) * (1 - f(29 / (H + 1)) * f((21 - G) / 11)), 
+        J = (year + f(year / 4) + I + 2 - C + f(C / 4)) % 7, 
+        L = I - J, month = 3 + f((L + 40) / 44), day = L + 28 - 31 * f(month / 4);
+  const easter = new Date(year, month - 1, day);
+  const add = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r.toISOString().split('T')[0]; };
+  return {
+    [`${year}-01-01`]: "Neujahr", [add(easter, -2)]: "Karfreitag", [add(easter, 1)]: "Ostermontag",
+    [`${year}-05-01`]: "Tag der Arbeit", [add(easter, 39)]: "Christi Himmelfahrt",
+    [add(easter, 50)]: "Pfingstmontag", [add(easter, 60)]: "Fronleichnam",
+    [`${year}-10-03`]: "Tag der Dt. Einheit", [`${year}-11-01`]: "Allerheiligen",
+    [`${year}-12-25`]: "1. Weihnachtstag", [`${year}-12-26`]: "2. Weihnachtstag"
+  };
+};
+
+const calculateWorkingDays = (year, month) => {
+  const h = getHolidaysNRW(year); let count = 0; const d = new Date(year, month, 1);
+  while (d.getMonth() === month) {
+    const k = d.toISOString().split('T')[0];
+    if (d.getDay() !== 0 && d.getDay() !== 6 && !h[k]) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
+};
+
+const INITIAL_EMPLOYEES = [
+  { id: '1', name: 'Adams, Hendrik', role: 'Stationsleitung', status: '100%', prevOvertime: 0 },
+  { id: '2', name: 'Fuchsa, Jennifer', role: 'stellv. Leitung', status: '100%', prevOvertime: 0 },
+  { id: '3', name: 'Günter, Stephanie', role: 'Fachkraft', status: '100%', prevOvertime: 0 },
+  { id: '4', name: 'Blank, Alexandra', role: 'Fachkraft', status: '100%', prevOvertime: 0 },
+  { id: '5', name: 'Friedrich, Kristina', role: 'Fachkraft', status: '100%', prevOvertime: 0 },
+];
+
+const DEFAULT_SHIFTS = {
+  FD: { label: 'Frühdienst', color: 'bg-cyan-400', textColor: 'text-cyan-950', hours: 7.7 },
+  SD: { label: 'Spätdienst', color: 'bg-fuchsia-500', textColor: 'text-white', hours: 7.7 },
+  ZD: { label: 'Zwischendienst', color: 'bg-indigo-500', textColor: 'text-white', hours: 7.7 },
+  ND: { label: 'Nachtdienst', color: 'bg-orange-600', textColor: 'text-white', hours: 9.5 },
+  U:  { label: 'Urlaub', color: 'bg-yellow-400', textColor: 'text-yellow-950', hours: 7.7 },
+  K:  { label: 'Krank', color: 'bg-rose-500', textColor: 'text-white', hours: 7.7 },
+  LT: { label: 'Leitungstag', color: 'bg-emerald-400', textColor: 'text-emerald-950', hours: 7.7 },
+  X:  { label: 'Frei', color: 'bg-white/10', textColor: 'text-slate-500', hours: 0 }
+};
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [employees, setEmployees] = useState(INITIAL_EMPLOYEES);
+  const [roster, setRoster] = useState({});
+  const [notes, setNotes] = useState({});
+  const [shifts, setShifts] = useState(DEFAULT_SHIFTS);
+  const [shiftOrder, setShiftOrder] = useState(Object.keys(DEFAULT_SHIFTS));
+  const [columnOrder, setColumnOrder] = useState(['status', 'soll', 'ist', 'diff', 'prev']);
+  const [currentDate, setCurrentDate] = useState(new Date(2026, 3, 1));
+  const [activeShift, setActiveShift] = useState('FD');
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [viewMode, setViewMode] = useState('month'); 
+  const [zoom, setZoom] = useState(1);
+  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [dragItem, setDragItem] = useState(null);
+
+  // --- Authentifizierung ---
+  useEffect(() => {
+    const performAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (e) {
+        console.error("Auth Fehler:", e);
+      }
+    };
+    performAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- Echtzeit-Sync ---
+  useEffect(() => {
+    if (!user) return;
     
-    <!-- Firebase SDKs -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rosterPlan', 'main');
+    const unsub = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.employees) setEmployees(data.employees);
+        if (data.roster) setRoster(data.roster);
+        if (data.notes) setNotes(data.notes);
+        if (data.shifts) setShifts(data.shifts);
+        if (data.shiftOrder) setShiftOrder(data.shiftOrder);
+        if (data.columnOrder) setColumnOrder(data.columnOrder);
+      }
+    }, (err) => {
+      console.error("Firestore Fehler:", err);
+    });
+    
+    return () => unsub();
+  }, [user]);
 
-        window.firebaseCore = { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, collection, onSnapshot, serverTimestamp };
-    </script>
+  const saveToCloud = async () => {
+    if (!user) return;
+    setIsSyncing(true);
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rosterPlan', 'main');
+      await setDoc(docRef, {
+        employees, roster, notes, shifts, shiftOrder, columnOrder,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    } catch (e) {
+      console.error("Speicherfehler:", e);
+    }
+    setTimeout(() => setIsSyncing(false), 800);
+  };
 
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-color: #020617;
-            --text-primary: #ffffff; 
-            --text-secondary: #94a3b8;
-            --glass-bg: rgba(255, 255, 255, 0.03);
-            --glass-border: rgba(255, 255, 255, 0.08);
-            --accent: #3b82f6;
-            --holiday-color: rgba(234, 179, 8, 0.15);
-            --weekend-color: rgba(59, 130, 246, 0.08);
-            --zoom-factor: 1;
-        }
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const holidays = useMemo(() => getHolidaysNRW(year), [year]);
+  const workDays = useMemo(() => calculateWorkingDays(year, month), [year, month]);
+  const monthSollBase = workDays * 7.7;
 
-        .light-mode {
-            --bg-color: #f8fafc;
-            --text-primary: #0f172a; 
-            --text-secondary: #64748b;
-            --glass-bg: rgba(255, 255, 255, 0.8); 
-            --glass-border: rgba(15, 23, 42, 0.1);
-            --holiday-color: rgba(234, 179, 8, 0.1);
-            --weekend-color: rgba(59, 130, 246, 0.05);
-        }
+  const visibleDays = useMemo(() => {
+    const days = [];
+    const date = new Date(year, month, 1);
+    while (date.getMonth() === month) {
+      days.push(new Date(date));
+      date.setDate(date.getDate() + 1);
+    }
+    return viewMode === 'month' ? days : days.slice(0, 7);
+  }, [year, month, viewMode]);
 
-        body {
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            background: var(--bg-color);
-            color: var(--text-primary);
-            transition: background 0.3s ease;
-            -webkit-tap-highlight-color: transparent;
-        }
+  const toggleShift = (empId, date) => {
+    if (!isEditMode) return;
+    const dateKey = date.toISOString().split('T')[0];
+    if (activeShift === 'NOTE') {
+      const currentNote = (notes[empId] || {})[dateKey] || "";
+      const text = prompt("Notiz für diesen Tag:", currentNote);
+      if (text !== null) {
+        setNotes(prev => ({
+          ...prev,
+          [empId]: { ...(prev[empId] || {}), [dateKey]: text }
+        }));
+      }
+      return;
+    }
+    setRoster(prev => {
+      const empData = { ...(prev[empId] || {}) };
+      empData[dateKey] = empData[dateKey] === activeShift ? null : activeShift;
+      return { ...prev, [empId]: empData };
+    });
+  };
 
-        .glass { background: var(--glass-bg); backdrop-filter: blur(12px); border: 1px solid var(--glass-border); }
-        .sticky-left { position: sticky; left: 0; z-index: 40; background: var(--bg-color); }
-        .holiday-cell { background-color: var(--holiday-color) !important; }
-        .weekend-cell { background-color: var(--weekend-color) !important; }
-        
-        #rosterTable { zoom: var(--zoom-factor); border-collapse: separate; border-spacing: 0; }
-        
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.2); border-radius: 10px; }
+  const handleDragStart = (e, type, index) => {
+    if (!isEditMode) return e.preventDefault();
+    setDragItem({ type, index });
+  };
 
-        .note-indicator { position: absolute; top: 2px; right: 2px; width: 4px; height: 4px; border-radius: 50%; background: #eab308; }
-        
-        @keyframes pulse-sync {
-            0% { opacity: 1; }
-            50% { opacity: 0.4; }
-            100% { opacity: 1; }
-        }
-        .syncing { animation: pulse-sync 1.5s infinite; }
+  const handleDragOver = (e) => e.preventDefault();
 
-        @media print {
-            .no-print { display: none !important; }
-            body { background: white !important; color: black !important; }
-            .glass { border: none !important; background: transparent !important; box-shadow: none !important; }
-            .sticky-left { position: relative !important; background: white !important; }
-            #rosterTable { zoom: 0.8 !important; width: 100% !important; }
-            th, td { border: 0.5pt solid #ccc !important; }
-        }
-    </style>
-</head>
-<body class="h-screen flex flex-col overflow-hidden">
+  const handleDrop = (e, type, index) => {
+    if (!isEditMode || !dragItem || dragItem.type !== type) return;
+    
+    if (type === 'employee') {
+      const newEmployees = [...employees];
+      const [moved] = newEmployees.splice(dragItem.index, 1);
+      newEmployees.splice(index, 0, moved);
+      setEmployees(newEmployees);
+    } else if (type === 'column') {
+      const newOrder = [...columnOrder];
+      const [moved] = newOrder.splice(dragItem.index, 1);
+      newOrder.splice(index, 0, moved);
+      setColumnOrder(newOrder);
+    } else if (type === 'shift') {
+      const newOrder = [...shiftOrder];
+      const [moved] = newOrder.splice(dragItem.index, 1);
+      newOrder.splice(index, 0, moved);
+      setShiftOrder(newOrder);
+    }
+    setDragItem(null);
+  };
 
-    <!-- Toast / Notification -->
-    <div id="toast" class="fixed top-6 left-1/2 -translate-x-1/2 z-[300] hidden pointer-events-none">
-        <div class="glass px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border-white/20">
-            <div id="toastIcon" class="text-blue-500"></div>
-            <span id="toastMessage" class="text-sm font-bold text-current"></span>
-        </div>
-    </div>
+  return (
+    <div className={`min-h-screen ${isDarkMode ? 'bg-[#020617] text-slate-200' : 'bg-slate-50 text-slate-900'} font-sans p-2 md:p-4 overflow-hidden flex flex-col transition-colors duration-500`}>
+      <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-600/5 rounded-full blur-[120px] pointer-events-none"></div>
 
-    <!-- Modals -->
-    <div id="overlay" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200] hidden items-center justify-center p-4">
-        <div id="modalContent" class="glass p-8 rounded-3xl w-full max-w-md shadow-2xl transition-all scale-95 opacity-0"></div>
-    </div>
-
-    <!-- Header -->
-    <header class="glass m-4 p-3 rounded-2xl flex items-center justify-between gap-4 no-print">
-        <div class="flex items-center gap-3">
-            <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
-                <i data-lucide="shield-check" class="text-white" size="20"></i>
+      <header className={`flex flex-wrap items-center justify-between mb-4 ${isDarkMode ? 'bg-white/5' : 'bg-white shadow-sm'} backdrop-blur-2xl border border-white/10 p-3 rounded-2xl`}>
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-500 rounded-xl flex items-center justify-center shadow-lg">
+            <Calendar className="text-white" size={20} />
+          </div>
+          <div>
+            <h1 className="text-lg font-black tracking-tight leading-none">Dienstplan PRO</h1>
+            <div className="flex items-center gap-2 mt-1">
+              <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${isSyncing ? 'bg-blue-500/20 text-blue-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                {isSyncing ? 'Synchronisierung...' : 'Live-Sync Aktiv'}
+              </span>
+              <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">{workDays} Arbeitstage</span>
             </div>
-            <div>
-                <h1 class="text-sm font-black tracking-tight leading-none uppercase">Helios Duisburg</h1>
-                <p id="syncLabel" class="text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-1">Initialisiere...</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 mt-2 sm:mt-0">
+          <div className="flex items-center bg-black/40 p-1 rounded-xl border border-white/5">
+            <button onClick={() => setCurrentDate(new Date(year, month - 1, 1))} className="p-1 hover:bg-white/10 rounded-lg"><ChevronLeft size={16}/></button>
+            <div className="px-3 font-bold text-xs min-w-[120px] text-center uppercase tracking-wider cursor-pointer hover:text-blue-400 transition-colors">
+              {currentDate.toLocaleString('de-DE', { month: 'long', year: 'numeric' })}
             </div>
-        </div>
+            <button onClick={() => setCurrentDate(new Date(year, month + 1, 1))} className="p-1 hover:bg-white/10 rounded-lg"><ChevronRight size={16}/></button>
+          </div>
 
-        <div class="flex items-center gap-2 bg-black/10 p-1 rounded-xl">
-            <button onclick="changeMonth(-1)" class="p-2 hover:bg-white/5 rounded-lg transition-colors"><i data-lucide="chevron-left" size="16"></i></button>
-            <button onclick="openYearPicker()" id="currentMonthLabel" class="px-4 text-[11px] font-black uppercase tracking-tighter">Monat</button>
-            <button onclick="changeMonth(1)" class="p-2 hover:bg-white/5 rounded-lg transition-colors"><i data-lucide="chevron-right" size="16"></i></button>
-        </div>
+          <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-black/40 rounded-xl border border-white/5">
+            <Minimize size={14} className="text-slate-500"/>
+            <input type="range" min="0.5" max="1.5" step="0.05" value={zoom} onChange={(e) => setZoom(parseFloat(e.target.value))} className="w-20 h-1 appearance-none bg-blue-600/20 rounded-full cursor-pointer accent-blue-500" />
+            <Maximize size={14} className="text-slate-500"/>
+          </div>
 
-        <div class="flex items-center gap-2">
-            <button id="lockBtn" onclick="toggleLock()" class="p-2.5 bg-slate-800 rounded-xl transition-all border border-white/5">
-                <i data-lucide="lock" id="lockIcon" size="18"></i>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 hover:bg-white/10 rounded-xl text-slate-400 transition-all">
+              {isDarkMode ? <Sun size={18}/> : <Moon size={18}/>}
             </button>
-            <button onclick="openSettings()" class="p-2.5 bg-slate-800 rounded-xl border border-white/5"><i data-lucide="settings" size="18"></i></button>
-            <button onclick="exportPlan()" class="hidden md:flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-[11px] font-black transition-all shadow-lg shadow-blue-600/20">
-                <i data-lucide="file-text" size="14"></i> EXPORT
+            <button 
+              onClick={() => setIsEditMode(!isEditMode)} 
+              className={`p-2 rounded-xl border transition-all ${isEditMode ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-lg shadow-emerald-500/10' : 'bg-white/5 border-white/10 text-slate-400'}`}
+              title="Edit-Modus umschalten"
+            >
+              {isEditMode ? <Unlock size={18} /> : <Lock size={18} />}
             </button>
+            <button onClick={() => setIsInfoOpen(true)} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-blue-400 transition-all"><Info size={18} /></button>
+            <button onClick={saveToCloud} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-black shadow-lg shadow-blue-600/20 flex items-center gap-2 active:scale-95 transition-all">
+              <Save size={14} className={isSyncing ? 'animate-spin' : ''}/> Sichern
+            </button>
+          </div>
         </div>
-    </header>
+      </header>
 
-    <div class="flex flex-1 overflow-hidden px-4 pb-4 gap-4">
-        <!-- Sidebar Palette -->
-        <aside id="palette" class="w-20 lg:w-48 flex flex-col gap-2 no-print transition-all duration-300 opacity-30 pointer-events-none">
-            <div class="glass rounded-2xl p-3 flex-1 overflow-y-auto no-scrollbar flex flex-col gap-2" id="paletteContent"></div>
+      <div className="flex flex-1 gap-4 overflow-hidden relative">
+        <aside className="w-14 md:w-44 flex flex-col gap-3 overflow-y-auto no-scrollbar pb-20 md:pb-0">
+          <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>
+            <p className="text-[10px] font-black text-slate-500 mb-3 uppercase hidden md:flex items-center gap-2"><Layout size={12}/> Palette</p>
+            <div className="flex flex-col gap-2">
+              <button 
+                onClick={() => setActiveShift('NOTE')}
+                className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${activeShift === 'NOTE' ? 'bg-amber-600/20 border-amber-600 scale-105 shadow-lg shadow-amber-600/10' : 'bg-black/20 border-white/5 hover:border-white/10'}`}
+              >
+                <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center shadow-sm">
+                  <StickyNote className="text-amber-950" size={14}/>
+                </div>
+                <span className="text-[10px] font-black hidden md:block uppercase truncate">Notiz</span>
+              </button>
+              
+              {shiftOrder.map((key, idx) => {
+                const cfg = shifts[key];
+                return (
+                  <button 
+                    key={key}
+                    draggable={isEditMode}
+                    onDragStart={(e) => handleDragStart(e, 'shift', idx)}
+                    onDragOver={handleDragOver}
+                    onDrop={(e) => handleDrop(e, 'shift', idx)}
+                    onClick={() => setActiveShift(key)}
+                    className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${isEditMode ? 'cursor-move' : ''} ${activeShift === key ? 'bg-blue-600/20 border-blue-600 scale-105 shadow-lg shadow-blue-600/10' : 'bg-black/20 border-white/5 hover:border-white/10'}`}
+                  >
+                    <div className={`w-8 h-8 rounded-lg ${cfg.color} flex items-center justify-center shadow-sm`}>
+                      <span className={`text-[10px] font-black ${cfg.textColor}`}>{key}</span>
+                    </div>
+                    <span className="text-[10px] font-black hidden md:block uppercase truncate">{cfg.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          
+          <button 
+            onClick={() => setViewMode(viewMode === 'month' ? 'week' : 'month')}
+            className="w-full py-3 bg-white/5 border border-white/10 rounded-xl flex flex-col items-center justify-center gap-1 hover:bg-white/10 transition-all text-slate-500"
+          >
+            {viewMode === 'month' ? <Monitor size={18}/> : <Smartphone size={18}/>}
+            <span className="text-[8px] font-black uppercase">{viewMode === 'month' ? 'Wochen-Ansicht' : 'Monats-Ansicht'}</span>
+          </button>
         </aside>
 
-        <!-- Main Roster -->
-        <main class="flex-1 glass rounded-3xl overflow-hidden flex flex-col relative shadow-inner">
-            <div class="overflow-auto flex-1 custom-scrollbar" id="scrollContainer">
-                <table id="rosterTable" class="w-full">
-                    <thead id="tableHead" class="sticky top-0 z-50 bg-[var(--bg-color)]"></thead>
-                    <tbody id="tableBody"></tbody>
-                    <tfoot id="tableFoot" class="sticky bottom-0 z-40"></tfoot>
-                </table>
-            </div>
+        <main className={`flex-1 border rounded-2xl overflow-hidden flex flex-col shadow-2xl ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>
+          <div className="overflow-x-auto overflow-y-auto flex-1 custom-scrollbar" style={{ transform: `scale(${zoom})`, transformOrigin: 'top left', width: `${100/zoom}%`, height: `${100/zoom}%` }}>
+            <table className="w-full border-separate border-spacing-0">
+              <thead>
+                <tr className={`${isDarkMode ? 'bg-slate-900' : 'bg-slate-100'} sticky top-0 z-[70]`}>
+                  <th className={`p-3 text-left text-[10px] font-black border-b border-white/10 sticky left-0 z-[80] min-w-[160px] uppercase ${isDarkMode ? 'bg-slate-900' : 'bg-slate-100'}`}>Mitarbeiter</th>
+                  
+                  {columnOrder.map((key, idx) => (
+                    <th 
+                      key={key}
+                      draggable={isEditMode}
+                      onDragStart={(e) => handleDragStart(e, 'column', idx)}
+                      onDragOver={handleDragOver}
+                      onDrop={(e) => handleDrop(e, 'column', idx)}
+                      className={`p-2 text-center text-[10px] font-black border-b border-white/10 uppercase transition-all ${isEditMode ? 'cursor-move hover:bg-white/5' : ''}`}
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        {isEditMode && <GripVertical size={10} className="text-slate-600" />}
+                        {key === 'status' ? 'VZ' : key === 'soll' ? 'Soll' : key === 'ist' ? 'Ist' : key === 'diff' ? '+/-' : 'Vmt'}
+                      </div>
+                    </th>
+                  ))}
+
+                  {visibleDays.map(day => {
+                    const k = day.toISOString().split('T')[0];
+                    const isH = !!holidays[k];
+                    const isW = day.getDay() === 0 || day.getDay() === 6;
+                    return (
+                      <th key={k} className={`p-2 border-b border-white/10 min-w-[45px] ${isH ? 'bg-amber-500/20' : isW ? 'bg-blue-500/10' : ''}`}>
+                        <div className="flex flex-col items-center">
+                          <span className="text-[8px] uppercase font-bold opacity-50">{day.toLocaleDateString('de-DE', { weekday: 'short' })}</span>
+                          <span className={`text-xs font-black ${isH ? 'text-amber-400' : isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{day.getDate()}</span>
+                        </div>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {employees.map((emp, rIdx) => {
+                  const empSoll = monthSollBase * (parseInt(emp.status) / 100);
+                  const empRoster = roster[emp.id] || {};
+                  const empNotes = notes[emp.id] || {};
+                  const ist = Object.values(empRoster).reduce((acc, code) => acc + (shifts[code]?.hours || 0), 0);
+                  const diff = ist - empSoll;
+
+                  return (
+                    <tr 
+                      key={emp.id} 
+                      draggable={isEditMode}
+                      onDragStart={(e) => handleDragStart(e, 'employee', rIdx)}
+                      onDragOver={handleDragOver}
+                      onDrop={(e) => handleDrop(e, 'employee', rIdx)}
+                      className={`group hover:bg-white/[0.03] transition-colors ${isEditMode ? 'cursor-move' : ''}`}
+                    >
+                      <td className={`p-3 sticky left-0 z-40 border-r border-white/5 shadow-xl ${isDarkMode ? 'bg-[#0f172a]' : 'bg-white'}`}>
+                        <div className="flex items-center gap-2">
+                          {isEditMode && <GripVertical size={12} className="text-slate-600"/>}
+                          <div>
+                            <div className="font-black text-[11px] uppercase">{emp.name}</div>
+                            <div className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter">{emp.role}</div>
+                          </div>
+                        </div>
+                      </td>
+                      
+                      {columnOrder.map(key => {
+                        if (key === 'status') return <td key={key} className="p-2 text-center text-[10px] font-bold text-slate-400 border-r border-white/5">{emp.status}</td>;
+                        if (key === 'soll') return <td key={key} className="p-2 text-center text-[10px] font-mono text-slate-500 border-r border-white/5">{empSoll.toFixed(0)}</td>;
+                        if (key === 'ist') return <td key={key} className="p-2 text-center text-[11px] font-black border-r border-white/5">{ist.toFixed(0)}</td>;
+                        if (key === 'diff') return <td key={key} className={`p-2 text-center text-[10px] font-black border-r border-white/5 ${diff >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{diff > 0 ? '+' : ''}{diff.toFixed(0)}</td>;
+                        if (key === 'prev') return <td key={key} className="p-2 text-center text-[10px] font-black text-blue-500 border-r border-white/5">{emp.prevOvertime}</td>;
+                        return null;
+                      })}
+
+                      {visibleDays.map(day => {
+                        const k = day.toISOString().split('T')[0];
+                        const s = empRoster[k];
+                        const n = empNotes[k];
+                        const isH = !!holidays[k];
+                        return (
+                          <td 
+                            key={k} 
+                            onClick={() => toggleShift(emp.id, day)}
+                            className={`p-1 border-r border-white/[0.02] text-center ${isH ? 'bg-amber-500/5' : ''} ${isEditMode ? 'cursor-pointer' : 'cursor-default'}`}
+                          >
+                            <div className={`min-h-[36px] w-full rounded-lg flex flex-col items-center justify-center transition-all p-0.5 ${s ? `${shifts[s].color} ${shifts[s].textColor} shadow-lg scale-105` : 'hover:bg-white/5'}`}>
+                              <span className="text-[10px] font-black leading-none">{s || ''}</span>
+                              {n && <span className="text-[6px] font-black leading-tight mt-0.5 opacity-80 uppercase line-clamp-2 break-all">{n}</span>}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </main>
+      </div>
+
+      {isInfoOpen && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 md:p-8">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsInfoOpen(false)}></div>
+          <div className="relative glass-effect bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-in zoom-in duration-300">
+            <div className="p-8 border-b border-white/10 flex items-center justify-between bg-gradient-to-r from-blue-600/10 to-transparent">
+              <div>
+                <h2 className="text-2xl font-black tracking-tight text-white mb-1">Feature-Übersicht: Dienstplan Pro</h2>
+                <p className="text-blue-400 text-sm font-bold uppercase tracking-widest">Helios Edition (v2.4.5)</p>
+              </div>
+              <button onClick={() => setIsInfoOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-all"><X size={28} /></button>
+            </div>
+            
+            <div className="p-8 overflow-y-auto custom-scrollbar space-y-8">
+              <div className="bg-blue-600/10 border border-blue-500/20 p-4 rounded-2xl text-slate-200 text-sm italic font-bold">
+                "Dieses Programm wurde speziell für die Anforderungen einer pflegerischen Leitung in der Notfallpflege entwickelt. Es kombiniert maximale Flexibilität mit automatisierter Logik."
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-slate-300 text-[11px]">
+                <div className="space-y-2">
+                  <h3 className="flex items-center gap-2 text-white font-black uppercase"><Cloud className="text-blue-400" size={16}/> 1. Daten & Sicherheit</h3>
+                  <ul className="list-disc pl-4 opacity-80">
+                    <li>Echtzeit-Cloud-Sync via Firestore</li>
+                    <li>Edit-Modus Sperrfunktion</li>
+                  </ul>
+                </div>
+                <div className="space-y-2">
+                  <h3 className="flex items-center gap-2 text-white font-black uppercase"><Settings className="text-emerald-400" size={16}/> 2. Logik</h3>
+                  <ul className="list-disc pl-4 opacity-80">
+                    <li>NRW-Feiertagsberechnung</li>
+                    <li>Automatische Soll-Kalkulation (7.7h)</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+            <div className="p-6 border-t border-white/10 bg-black/20 flex justify-center">
+              <button onClick={() => setIsInfoOpen(false)} className="px-12 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl">Verstanden</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; height: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 12px; width: 12px; border-radius: 50%; background: #3b82f6; cursor: pointer; border: 2px solid #fff; }
+        @media print {
+          body { background: white !important; color: black !important; padding: 0 !important; }
+          header, aside, .no-print { display: none !important; }
+          main { border: none !important; width: 100vw !important; }
+          table { width: 100% !important; border-collapse: collapse !important; font-size: 8pt; }
+          td, th { border: 0.1pt solid #ccc !important; color: black !important; background: white !important; }
+        }
+      `}</style>
     </div>
+  );
+};
 
-    <script type="module">
-        // --- Firebase State ---
-        let db, auth, user, firebaseApp;
-        const appId = typeof __app_id !== 'undefined' ? __app_id : "helios-notaufnahme-duisburg";
-
-        let isLocked = true;
-        let currentDate = new Date(2026, 3, 1);
-        let activeShift = 'FD';
-
-        // --- Die Mannschaft von Henne ---
-        const INITIAL_EMPLOYEES = [
-            { id: '1', name: 'Adams, Hendrik', role: 'Stationsleitung' },
-            { id: '2', name: 'Fuchsa, Jennifer', role: 'stellv. Leitung' },
-            { id: '3', name: 'Günter, Stephanie', role: 'Pflegekraft' },
-            { id: '4', name: 'Blank, Alexandra', role: 'Pflegekraft' },
-            { id: '5', name: 'Friedrich, Kristina', role: 'Pflegekraft' },
-            { id: '6', name: 'Weienberg, Hanna', role: 'Fachkraft' },
-            { id: '7', name: 'Hackmann, Matthias', role: 'Pflegekraft' },
-            { id: '8', name: 'Buchmüller, Jörg', role: 'Pflegekraft' },
-            { id: '9', name: 'Rösken, Katrin', role: 'Pflegekraft' },
-            { id: '10', name: 'Theißen, Jennifer', role: 'Pflegekraft' },
-            { id: '11', name: 'Daniels, Justin', role: 'Pflegekraft' },
-            { id: '12', name: 'Kaymaz, Melda', role: 'Pflegekraft' },
-            { id: '13', name: 'Kühn, Philipp', role: 'Pflegekraft' },
-            { id: '14', name: 'Strachanski, Julia', role: 'Pflegekraft' },
-            { id: '15', name: 'Preußner, Pauline', role: 'Azubi' },
-            { id: '16', name: 'Bielok, Lara', role: 'Pflegekraft' },
-            { id: '17', name: 'Wüstkamp, Bianca', role: 'Pflegekraft' },
-            { id: '18', name: 'Bondzau, Martina', role: 'Pflegekraft' }
-        ];
-
-        // Local State Management
-        let employees = JSON.parse(localStorage.getItem('h_emp')) || INITIAL_EMPLOYEES;
-        let roster = JSON.parse(localStorage.getItem('h_rost')) || {};
-        let notes = JSON.parse(localStorage.getItem('h_notes')) || {};
-        
-        // Display Settings
-        let viewSettings = JSON.parse(localStorage.getItem('h_view')) || { role: true };
-        let counterSettings = JSON.parse(localStorage.getItem('h_counters')) || { FD: true, SD: true, ND: true, ZD: true };
-        
-        const SHIFTS = {
-            FD: { label: 'Frühdienst', color: 'bg-cyan-500', text: 'text-white', h: 7.7 },
-            SD: { label: 'Spätdienst', color: 'bg-fuchsia-600', text: 'text-white', h: 7.7 },
-            ND: { label: 'Nachtdienst', color: 'bg-indigo-600', text: 'text-white', h: 9.5 },
-            ZD: { label: 'Zwischendienst', color: 'bg-blue-500', text: 'text-white', h: 7.7 },
-            U:  { label: 'Urlaub', color: 'bg-yellow-500', text: 'text-black', h: 7.7 },
-            K:  { label: 'Krank', color: 'bg-rose-500', text: 'text-white', h: 7.7 },
-            LT: { label: 'Leitungstag', color: 'bg-emerald-500', text: 'text-white', h: 7.7 },
-            F:  { label: 'Frei', color: 'bg-slate-700/50', text: 'text-slate-400', h: 0 }
-        };
-
-        // --- Firebase Core Logic ---
-        async function initFirebase() {
-            if (!window.firebaseCore) {
-                showToast("Firebase nicht geladen", "alert-circle");
-                return;
-            }
-
-            const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, getFirestore, onAuthStateChanged } = window.firebaseCore;
-
-            try {
-                const firebaseConfig = typeof __firebase_config !== 'undefined' 
-                    ? JSON.parse(__firebase_config) 
-                    : { apiKey: "", authDomain: "", projectId: "" };
-
-                firebaseApp = initializeApp(firebaseConfig);
-                auth = getAuth(firebaseApp);
-                db = getFirestore(firebaseApp);
-
-                const initAuth = async () => {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                };
-
-                await initAuth();
-
-                onAuthStateChanged(auth, (u) => {
-                    user = u;
-                    if (u) {
-                        document.getElementById('syncLabel').innerText = "Sync: Online";
-                        loadCloudData();
-                    } else {
-                        document.getElementById('syncLabel').innerText = "Sync: Offline";
-                    }
-                });
-            } catch (error) {
-                console.error("Firebase Auth Error:", error);
-                showToast("Auth Fehler: " + error.code, "alert-circle");
-            }
-        }
-
-        async function loadCloudData() {
-            if (!user || !db) return;
-            const { doc, getDoc } = window.firebaseCore;
-            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rosterPlan', 'main');
-            
-            try {
-                const snap = await getDoc(docRef);
-                if (snap.exists()) {
-                    const data = snap.data();
-                    if (data.employees && data.employees.length > 0) employees = data.employees;
-                    if (data.roster) roster = data.roster;
-                    if (data.notes) notes = data.notes;
-                    renderRoster();
-                }
-            } catch (e) {
-                console.error("Ladefehler:", e);
-                showToast("Cloud-Sync fehlgeschlagen", "alert-triangle");
-            }
-        }
-
-        async function saveToCloud() {
-            if (!user || !db) return;
-            const { doc, setDoc, serverTimestamp } = window.firebaseCore;
-            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rosterPlan', 'main');
-            
-            document.getElementById('syncLabel').classList.add('syncing');
-            try {
-                await setDoc(docRef, {
-                    employees, 
-                    roster, 
-                    notes,
-                    updatedAt: serverTimestamp()
-                }, { merge: true });
-                showToast("Änderungen gesichert", "check");
-            } catch (e) {
-                console.error("Speicherfehler:", e);
-                showToast("Sync-Fehler", "alert-triangle");
-            }
-            setTimeout(() => document.getElementById('syncLabel').classList.remove('syncing'), 1000);
-        }
-
-        // --- App Interface Logic ---
-        async function init() {
-            await initFirebase();
-            renderPalette();
-            renderRoster();
-            lucide.createIcons();
-        }
-
-        window.toggleLock = () => {
-            isLocked = !isLocked;
-            const btn = document.getElementById('lockBtn');
-            const icon = document.getElementById('lockIcon');
-            const palette = document.getElementById('palette');
-
-            if (isLocked) {
-                btn.className = "p-2.5 bg-slate-800 rounded-xl transition-all border border-white/5";
-                icon.setAttribute('data-lucide', 'lock');
-                palette.classList.add('opacity-30', 'pointer-events-none');
-            } else {
-                btn.className = "p-2.5 bg-emerald-600 rounded-xl transition-all border border-emerald-400 shadow-lg shadow-emerald-600/20";
-                icon.setAttribute('data-lucide', 'lock-open');
-                palette.classList.remove('opacity-30', 'pointer-events-none');
-                showToast("Editor bereit", "pencil");
-            }
-            lucide.createIcons();
-            renderRoster();
-        };
-
-        function getDaysInMonth(y, m) {
-            const days = [];
-            const date = new Date(y, m, 1);
-            while (date.getMonth() === m) {
-                days.push(new Date(date));
-                date.setDate(date.getDate() + 1);
-            }
-            return days;
-        }
-
-        window.changeMonth = (delta) => {
-            currentDate.setMonth(currentDate.getMonth() + delta);
-            renderRoster();
-        };
-
-        function renderPalette() {
-            const container = document.getElementById('paletteContent');
-            container.innerHTML = `<p class="text-[9px] font-black text-slate-500 uppercase tracking-widest text-center mb-2">Dienstwahl</p>`;
-            
-            Object.entries(SHIFTS).forEach(([key, cfg]) => {
-                const btn = document.createElement('button');
-                btn.onclick = () => { activeShift = key; renderPalette(); };
-                btn.className = `w-full aspect-square md:aspect-auto md:h-12 rounded-xl flex items-center justify-center font-black transition-all border-2 ${activeShift === key ? `${cfg.color} ${cfg.text} border-white shadow-xl scale-105` : `bg-black/20 border-transparent text-slate-400 hover:border-white/10`}`;
-                btn.innerHTML = `<span class="text-xs">${key}</span>`;
-                container.appendChild(btn);
-            });
-
-            const noteBtn = document.createElement('button');
-            noteBtn.onclick = () => { activeShift = 'NOTE'; renderPalette(); };
-            noteBtn.className = `w-full h-12 mt-4 rounded-xl flex items-center justify-center transition-all border-2 ${activeShift === 'NOTE' ? 'bg-yellow-500 text-black border-white' : 'bg-black/20 border-transparent text-yellow-500/50'}`;
-            noteBtn.innerHTML = `<i data-lucide="sticky-note" size="18"></i>`;
-            container.appendChild(noteBtn);
-            lucide.createIcons();
-        }
-
-        function renderRoster() {
-            const year = currentDate.getFullYear();
-            const month = currentDate.getMonth();
-            const days = getDaysInMonth(year, month);
-            
-            document.getElementById('currentMonthLabel').innerText = currentDate.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
-
-            // Table Head
-            let headHTML = `<tr><th class="p-4 text-left text-[10px] font-black uppercase tracking-widest sticky-left border-b border-white/5 min-w-[180px]">Personal</th>`;
-            days.forEach(d => {
-                const isW = d.getDay() === 0 || d.getDay() === 6;
-                headHTML += `<th class="p-2 border-b border-white/5 min-w-[38px] ${isW ? 'weekend-cell' : ''}">
-                    <div class="flex flex-col items-center">
-                        <span class="text-[8px] uppercase opacity-40 font-bold">${d.toLocaleDateString('de-DE', { weekday: 'short' })}</span>
-                        <span class="text-[11px] font-black">${d.getDate()}</span>
-                    </div>
-                </th>`;
-            });
-            document.getElementById('tableHead').innerHTML = headHTML + `</tr>`;
-
-            // Table Body
-            let bodyHTML = "";
-            employees.forEach((emp, eIdx) => {
-                let row = `<tr class="group hover:bg-white/5 transition-colors">
-                    <td class="p-3 sticky-left border-b border-white/5 z-20">
-                        <div class="flex items-center gap-2">
-                            <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-slate-700 to-slate-900 flex items-center justify-center text-[10px] font-bold text-slate-400">
-                                ${emp.name ? emp.name.split(',')[0].substring(0,2).toUpperCase() : '??'}
-                            </div>
-                            <div class="flex flex-col overflow-hidden">
-                                <span class="text-[11px] font-bold truncate uppercase tracking-tighter">${emp.name}</span>
-                                ${viewSettings.role ? `<span class="text-[9px] text-slate-500 font-medium">${emp.role}</span>` : ''}
-                            </div>
-                            ${!isLocked ? `<button onclick="editEmployee(${eIdx})" class="ml-auto opacity-0 group-hover:opacity-100 p-1 text-slate-500"><i data-lucide="more-vertical" size="14"></i></button>` : ''}
-                        </div>
-                    </td>`;
-
-                days.forEach(d => {
-                    const k = d.toISOString().split('T')[0];
-                    const shiftKey = (roster[emp.id] || {})[k];
-                    const hasNote = (notes[emp.id] || {})[k];
-                    const cfg = SHIFTS[shiftKey];
-                    const isW = d.getDay() === 0 || d.getDay() === 6;
-
-                    row += `<td onclick="handleCellClick('${emp.id}', '${k}')" class="p-0.5 border-b border-white/5 text-center transition-all relative ${isW ? 'weekend-cell' : ''} ${!isLocked ? 'cursor-pointer hover:bg-blue-500/10' : ''}">
-                        <div class="w-full h-8 flex items-center justify-center rounded-lg text-[10px] font-black transition-all ${cfg ? `${cfg.color} ${cfg.text} shadow-lg scale-95` : ''}">
-                            ${shiftKey || ''}
-                            ${hasNote ? `<div class="note-indicator"></div>` : ''}
-                        </div>
-                    </td>`;
-                });
-                bodyHTML += row + `</tr>`;
-            });
-            
-            if (!isLocked) {
-                bodyHTML += `<tr><td colspan="${days.length + 1}" class="p-4"><button onclick="addEmployee()" class="w-full py-2 rounded-xl border border-dashed border-white/10 text-[10px] font-black text-slate-500 hover:text-white hover:border-white/30 transition-all">+ WEITERES PERSONAL HINZUFÜGEN</button></td></tr>`;
-            }
-
-            document.getElementById('tableBody').innerHTML = bodyHTML;
-            renderFooter(days);
-            lucide.createIcons();
-        }
-
-        function renderFooter(days) {
-            const foot = document.getElementById('tableFoot');
-            foot.innerHTML = "";
-            
-            Object.keys(counterSettings).forEach(sKey => {
-                if (!counterSettings[sKey]) return;
-                const cfg = SHIFTS[sKey];
-                let row = `<tr class="bg-[var(--bg-color)]/90 backdrop-blur-md">
-                    <td class="p-2 sticky-left border-t border-white/5 text-[10px] font-bold">
-                        <div class="flex items-center gap-2">
-                            <div class="w-5 h-5 rounded ${cfg.color} ${cfg.text} flex items-center justify-center text-[8px]">${sKey}</div>
-                            <span class="opacity-60 uppercase tracking-tighter">${cfg.label}</span>
-                        </div>
-                    </td>`;
-                
-                days.forEach(d => {
-                    const k = d.toISOString().split('T')[0];
-                    let count = 0;
-                    employees.forEach(emp => {
-                        if ((roster[emp.id] || {})[k] === sKey) count++;
-                    });
-                    row += `<td class="p-1 text-center border-t border-white/5 text-[10px] font-black ${count > 0 ? 'text-white' : 'opacity-20'}">${count || 0}</td>`;
-                });
-                foot.innerHTML += row + `</tr>`;
-            });
-        }
-
-        window.handleCellClick = (empId, date) => {
-            if (isLocked) return;
-            if (activeShift === 'NOTE') {
-                openNoteEditor(empId, date);
-                return;
-            }
-            if (!roster[empId]) roster[empId] = {};
-            if (roster[empId][date] === activeShift) {
-                delete roster[empId][date];
-            } else {
-                roster[empId][date] = activeShift;
-            }
-            renderRoster();
-            saveToCloud();
-        };
-
-        // --- Settings Modal ---
-        window.openSettings = () => {
-            showModal(`
-                <h3 class="text-xl font-black mb-6 uppercase tracking-tight">Einstellungen</h3>
-                <div class="space-y-6">
-                    <div>
-                        <p class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Anzeige</p>
-                        <div class="flex items-center justify-between p-3 bg-black/20 rounded-xl border border-white/5">
-                            <span class="text-xs font-bold">Rollen/Positionen anzeigen</span>
-                            <button onclick="toggleViewSetting('role')" class="w-10 h-6 rounded-full relative transition-all ${viewSettings.role ? 'bg-blue-600' : 'bg-slate-700'}">
-                                <div class="absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${viewSettings.role ? 'right-1' : 'left-1'}"></div>
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div>
-                        <p class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Fußzeilen-Zähler</p>
-                        <div class="grid grid-cols-4 gap-2">
-                            ${Object.keys(SHIFTS).filter(k => k !== 'F').map(k => `
-                                <button onclick="toggleCounter('${k}')" class="p-2 rounded-xl border transition-all text-[10px] font-black ${counterSettings[k] ? 'bg-blue-600 border-white text-white' : 'bg-black/20 border-white/5 text-slate-500'}">
-                                    ${k}
-                                </button>
-                            `).join('')}
-                        </div>
-                    </div>
-
-                    <div class="pt-4 flex flex-col gap-2">
-                        <button onclick="toggleTheme()" class="w-full py-3 bg-slate-800 rounded-xl text-xs font-bold border border-white/5">Design wechseln (Light/Dark)</button>
-                        <button onclick="closeModal()" class="w-full py-4 bg-blue-600 rounded-xl text-sm font-black text-white shadow-lg">FERTIG</button>
-                    </div>
-                </div>
-            `);
-        };
-
-        window.toggleViewSetting = (key) => {
-            viewSettings[key] = !viewSettings[key];
-            localStorage.setItem('h_view', JSON.stringify(viewSettings));
-            openSettings();
-            renderRoster();
-        };
-
-        window.toggleCounter = (key) => {
-            counterSettings[key] = !counterSettings[key];
-            localStorage.setItem('h_counters', JSON.stringify(counterSettings));
-            openSettings();
-            renderRoster();
-        };
-
-        window.toggleTheme = () => {
-            document.body.classList.toggle('light-mode');
-            localStorage.setItem('theme', document.body.classList.contains('light-mode') ? 'light' : 'dark');
-        };
-
-        // --- Year Picker ---
-        window.openYearPicker = () => {
-            renderMonthGrid();
-        };
-
-        function renderMonthGrid() {
-            const year = currentDate.getFullYear();
-            const months = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
-            
-            showModal(`
-                <h3 class="text-xl font-black mb-6 text-center uppercase tracking-tight flex items-center justify-between">
-                    <button onclick="changeYear(-1)" class="p-2 hover:bg-white/5 rounded-lg"><i data-lucide="chevron-left"></i></button>
-                    ${year}
-                    <button onclick="changeYear(1)" class="p-2 hover:bg-white/5 rounded-lg"><i data-lucide="chevron-right"></i></button>
-                </h3>
-                <div class="grid grid-cols-3 gap-2">
-                    ${months.map((m, i) => `
-                        <button onclick="selectMonth(${i})" class="p-3 rounded-xl border transition-all text-[10px] font-black uppercase ${currentDate.getMonth() === i ? 'bg-blue-600 border-white text-white shadow-lg' : 'bg-black/20 border-white/5 text-slate-400'}">
-                            ${m.substring(0,3)}
-                        </button>
-                    `).join('')}
-                </div>
-                <button onclick="closeModal()" class="w-full mt-6 py-4 bg-slate-800 rounded-xl text-xs font-bold border border-white/5 text-white">SCHLIESSEN</button>
-            `);
-        }
-
-        window.changeYear = (delta) => {
-            currentDate.setFullYear(currentDate.getFullYear() + delta);
-            renderMonthGrid();
-        };
-
-        window.selectMonth = (m) => {
-            currentDate.setMonth(m);
-            closeModal();
-            renderRoster();
-        };
-
-        // --- Standard Modals ---
-        function showModal(html) {
-            const overlay = document.getElementById('overlay');
-            const content = document.getElementById('modalContent');
-            content.innerHTML = html;
-            overlay.style.display = 'flex';
-            setTimeout(() => content.classList.remove('scale-95', 'opacity-0'), 10);
-            lucide.createIcons();
-        }
-
-        window.closeModal = () => {
-            const content = document.getElementById('modalContent');
-            content.classList.add('scale-95', 'opacity-0');
-            setTimeout(() => document.getElementById('overlay').style.display = 'none', 200);
-        };
-
-        window.addEmployee = () => {
-            showModal(`
-                <h3 class="text-xl font-black mb-6 flex items-center gap-2 uppercase tracking-tight">Neuer Mitarbeiter</h3>
-                <div class="space-y-4">
-                    <input type="text" id="new_name" placeholder="Name, Vorname" class="w-full bg-black/20 border border-white/10 rounded-xl p-4 text-sm focus:outline-none focus:border-blue-500 transition-all text-white">
-                    <input type="text" id="new_role" placeholder="Position" class="w-full bg-black/20 border border-white/10 rounded-xl p-4 text-sm focus:outline-none focus:border-blue-500 transition-all text-white">
-                    <div class="flex gap-2 pt-4">
-                        <button onclick="closeModal()" class="flex-1 py-4 text-sm font-bold opacity-50 text-white">Abbrechen</button>
-                        <button onclick="saveNewEmployee()" class="flex-1 py-4 bg-blue-600 rounded-xl text-sm font-black shadow-lg text-white">SPEICHERN</button>
-                    </div>
-                </div>
-            `);
-        };
-
-        window.saveNewEmployee = () => {
-            const name = document.getElementById('new_name').value;
-            const role = document.getElementById('new_role').value;
-            if (!name) return;
-            employees.push({ id: crypto.randomUUID(), name, role });
-            closeModal();
-            renderRoster();
-            saveToCloud();
-        };
-
-        window.editEmployee = (idx) => {
-            const emp = employees[idx];
-            showModal(`
-                <h3 class="text-xl font-black mb-6 uppercase tracking-tight">Bearbeiten</h3>
-                <div class="space-y-4">
-                    <input type="text" id="edit_name" value="${emp.name}" class="w-full bg-black/20 border border-white/10 rounded-xl p-4 text-sm text-white">
-                    <input type="text" id="edit_role" value="${emp.role}" class="w-full bg-black/20 border border-white/10 rounded-xl p-4 text-sm text-white">
-                    <div class="flex flex-col gap-2 pt-4">
-                        <button onclick="updateEmployee(${idx})" class="w-full py-4 bg-blue-600 rounded-xl text-sm font-black text-white">UPDATE</button>
-                        <button onclick="deleteEmployee(${idx})" class="w-full py-2 text-[10px] font-black text-rose-500 mt-4 border border-rose-500/20 rounded-xl">LÖSCHEN</button>
-                        <button onclick="closeModal()" class="w-full py-2 text-xs font-bold opacity-40 text-white">Schließen</button>
-                    </div>
-                </div>
-            `);
-        };
-
-        window.updateEmployee = (idx) => {
-            employees[idx].name = document.getElementById('edit_name').value;
-            employees[idx].role = document.getElementById('edit_role').value;
-            closeModal();
-            renderRoster();
-            saveToCloud();
-        };
-
-        window.deleteEmployee = (idx) => {
-            if (confirm("Mitarbeiter wirklich löschen?")) {
-                employees.splice(idx, 1);
-                closeModal();
-                renderRoster();
-                saveToCloud();
-            }
-        };
-
-        function openNoteEditor(empId, date) {
-            const currentNote = (notes[empId] || {})[date] || "";
-            showModal(`
-                <h3 class="text-xl font-black mb-2 flex items-center gap-2 uppercase"><i data-lucide="sticky-note" class="text-yellow-500"></i> Notiz</h3>
-                <p class="text-[10px] text-slate-500 mb-6 uppercase font-bold tracking-widest">${date}</p>
-                <textarea id="note_text" class="w-full bg-black/20 border border-white/10 rounded-2xl p-4 text-sm h-32 focus:outline-none resize-none text-white">${currentNote}</textarea>
-                <div class="flex gap-2 pt-4">
-                    <button onclick="closeModal()" class="flex-1 py-4 text-sm font-bold opacity-50 text-white">Abbrechen</button>
-                    <button onclick="saveNote('${empId}', '${date}')" class="flex-1 py-4 bg-yellow-600 text-black rounded-xl text-sm font-black shadow-lg">SPEICHERN</button>
-                </div>
-            `);
-        }
-
-        window.saveNote = (empId, date) => {
-            const text = document.getElementById('note_text').value.trim();
-            if (!notes[empId]) notes[empId] = {};
-            if (text) notes[empId][date] = text;
-            else delete notes[empId][date];
-            closeModal();
-            renderRoster();
-            saveToCloud();
-        };
-
-        function showToast(msg, icon) {
-            const t = document.getElementById('toast');
-            document.getElementById('toastMessage').innerText = msg;
-            document.getElementById('toastIcon').innerHTML = `<i data-lucide="${icon}"></i>`;
-            lucide.createIcons();
-            t.style.display = 'flex';
-            setTimeout(() => t.style.display = 'none', 3000);
-        }
-
-        window.exportPlan = () => window.print();
-
-        window.onload = init;
-    </script>
-</body>
-</html>
+export default App;
