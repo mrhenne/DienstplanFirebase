@@ -88,20 +88,13 @@
             useEffect(() => {
                 if (!spanRef.current || !window.lucide) return;
                 
-                // Bereinige den Span-Inhalt, damit React nicht irritiert wird
                 spanRef.current.innerHTML = '';
-                
-                // Erstelle ein neues i-Element für Lucide
                 const i = document.createElement('i');
                 i.setAttribute('data-lucide', name);
                 spanRef.current.appendChild(i);
                 
-                // Lass Lucide nur innerhalb dieses Spans arbeiten
-                window.lucide.createIcons({
-                    root: spanRef.current
-                });
+                window.lucide.createIcons({ root: spanRef.current });
                 
-                // Passe die Größe an
                 const svg = spanRef.current.querySelector('svg');
                 if (svg) {
                     svg.setAttribute('width', size);
@@ -109,7 +102,6 @@
                 }
             }, [name, size]);
 
-            // React überwacht nur den äußeren Span ohne Kinder, was Abstürze verhindert
             return <span ref={spanRef} className={`inline-flex items-center justify-center ${className}`}></span>;
         };
 
@@ -161,11 +153,25 @@
             X:  { label: 'Frei', color: 'bg-slate-500/20', textColor: 'text-slate-400', hours: 0 }
         };
 
+        const COLOR_OPTIONS = [
+            { value: 'bg-cyan-500', label: 'Cyan', text: 'text-cyan-950' },
+            { value: 'bg-fuchsia-600', label: 'Pink', text: 'text-white' },
+            { value: 'bg-indigo-600', label: 'Indigo', text: 'text-white' },
+            { value: 'bg-orange-600', label: 'Orange', text: 'text-white' },
+            { value: 'bg-amber-400', label: 'Gelb', text: 'text-amber-950' },
+            { value: 'bg-rose-600', label: 'Rot', text: 'text-white' },
+            { value: 'bg-emerald-500', label: 'Grün', text: 'text-emerald-950' },
+            { value: 'bg-blue-600', label: 'Blau', text: 'text-white' },
+            { value: 'bg-purple-500', label: 'Lila', text: 'text-white' },
+            { value: 'bg-slate-500/20', label: 'Grau', text: 'text-slate-400' }
+        ];
+
         const App = () => {
             const [user, setUser] = useState(null);
             const [employees, setEmployees] = useState(INITIAL_EMPLOYEES);
             const [roster, setRoster] = useState({});
             const [notes, setNotes] = useState({});
+            const [shifts, setShifts] = useState(DEFAULT_SHIFTS);
             
             // Reaktivierte State-Variablen
             const [columnOrder, setColumnOrder] = useState(['status', 'soll', 'ist', 'diff', 'prev']);
@@ -181,6 +187,12 @@
             const [isSyncing, setIsSyncing] = useState(false);
             const [dragItem, setDragItem] = useState(null);
             const [editingEmp, setEditingEmp] = useState(null);
+
+            // Lokaler State für das Hinzufügen von Diensten
+            const [newShiftCode, setNewShiftCode] = useState('');
+            const [newShiftLabel, setNewShiftLabel] = useState('');
+            const [newShiftHours, setNewShiftHours] = useState('7.7');
+            const [newShiftColor, setNewShiftColor] = useState('bg-blue-600');
 
             useEffect(() => {
                 const initAuth = async () => {
@@ -209,6 +221,7 @@
                         if (data.roster) setRoster(data.roster);
                         if (data.notes) setNotes(data.notes);
                         if (data.columnOrder) setColumnOrder(data.columnOrder);
+                        if (data.shifts) setShifts(data.shifts);
                     }
                 }, (err) => console.error("Firestore Snapshot Error", err));
             }, [user]);
@@ -219,7 +232,7 @@
                 try {
                     const docRef = db.doc(`artifacts/${appId}/public/data/plans/main`);
                     await docRef.set({
-                        employees, roster, notes, columnOrder,
+                        employees, roster, notes, columnOrder, shifts,
                         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                     }, { merge: true });
                 } catch (e) { console.error("Cloud Save Error", e); }
@@ -310,6 +323,38 @@
                 setDragItem(null);
             };
 
+            // Dienst Management Funktionen
+            const handleAddShift = () => {
+                if (!newShiftCode || !newShiftLabel) return;
+                const selectedColor = COLOR_OPTIONS.find(c => c.value === newShiftColor);
+                setShifts(prev => ({
+                    ...prev,
+                    [newShiftCode]: {
+                        label: newShiftLabel,
+                        color: selectedColor.value,
+                        textColor: selectedColor.text,
+                        hours: parseFloat(newShiftHours) || 0
+                    }
+                }));
+                setNewShiftCode('');
+                setNewShiftLabel('');
+            };
+
+            const updateShift = (code, field, value) => {
+                setShifts(prev => ({
+                    ...prev,
+                    [code]: { ...prev[code], [field]: value }
+                }));
+            };
+
+            const deleteShift = (code) => {
+                if (!window.confirm(`Möchtest du den Dienst "${code}" wirklich löschen?`)) return;
+                const s = { ...shifts };
+                delete s[code];
+                setShifts(s);
+                if (activeShift === code) setActiveShift('FD');
+            };
+
             // Farb-Thema Variablen
             const themeClasses = isDarkMode 
                 ? 'bg-[#0a0f1d] text-slate-200' 
@@ -375,26 +420,32 @@
                     <div className="flex flex-1 gap-4 overflow-hidden relative">
                         {/* Sidebar Palette */}
                         <aside className="w-14 md:w-48 flex flex-col gap-3 no-print shrink-0 overflow-y-auto custom-scrollbar pb-10">
-                            <div className={`p-3 rounded-[24px] border ${cardClasses}`}>
+                            <div className={`p-3 rounded-[24px] border flex-1 overflow-y-auto custom-scrollbar ${cardClasses}`}>
                                 <p className="text-[10px] font-black text-slate-500 mb-3 uppercase tracking-widest hidden md:block">Werkzeuge</p>
                                 <div className="flex flex-col gap-2">
                                     <button onClick={() => setActiveShift('NOTE')} className={`flex items-center gap-3 p-2 rounded-xl border transition-all ${activeShift === 'NOTE' ? 'bg-amber-500/20 border-amber-500 scale-105' : isDarkMode ? 'bg-black/20 border-white/5' : 'bg-slate-50 border-slate-200'}`}>
-                                        <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center text-white"><Icon name="sticky-note" size={14}/></div>
-                                        <span className="text-[10px] font-black hidden md:block uppercase tracking-wider">Notiz</span>
+                                        <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center text-white shrink-0"><Icon name="sticky-note" size={14}/></div>
+                                        <span className="text-[10px] font-black hidden md:block uppercase tracking-wider truncate">Notiz</span>
                                     </button>
                                     <div className={`h-px my-1 ${isDarkMode ? 'bg-white/5' : 'bg-slate-200'}`}></div>
-                                    {Object.entries(DEFAULT_SHIFTS).map(([key, cfg]) => (
+                                    {Object.entries(shifts).map(([key, cfg]) => (
                                         <button key={key} onClick={() => setActiveShift(key)} className={`flex items-center gap-3 p-2 rounded-xl border transition-all ${activeShift === key ? 'bg-blue-600/20 border-blue-500 scale-105' : isDarkMode ? 'bg-black/20 border-white/5' : 'bg-slate-50 border-slate-200'}`}>
-                                            <div className={`w-8 h-8 rounded-lg ${cfg.color} flex items-center justify-center text-[10px] font-black ${cfg.textColor}`}>{key}</div>
-                                            <span className="text-[10px] font-black hidden md:block uppercase truncate">{cfg.label}</span>
+                                            <div className={`w-8 h-8 rounded-lg ${cfg.color} flex items-center justify-center text-[10px] font-black ${cfg.textColor} shrink-0`}>{key}</div>
+                                            <span className="text-[10px] font-black hidden md:block uppercase truncate" title={cfg.label}>{cfg.label}</span>
                                         </button>
                                     ))}
                                 </div>
                             </div>
-                            <button onClick={() => setViewMode(viewMode === 'month' ? 'week' : 'month')} className={`w-full py-4 rounded-[24px] border flex flex-col items-center gap-2 transition-all ${cardClasses} hover:bg-slate-500/10`}>
-                                <Icon name={viewMode === 'month' ? 'monitor' : 'smartphone'} size={20} className="text-slate-500"/>
-                                <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">{viewMode === 'month' ? 'Woche' : 'Monat'}</span>
-                            </button>
+                            <div className="flex flex-col gap-2 shrink-0">
+                                <button onClick={() => setViewMode(viewMode === 'month' ? 'week' : 'month')} className={`w-full py-4 rounded-[24px] border flex flex-col items-center gap-2 transition-all ${cardClasses} hover:bg-slate-500/10`}>
+                                    <Icon name={viewMode === 'month' ? 'monitor' : 'smartphone'} size={20} className="text-slate-500"/>
+                                    <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">{viewMode === 'month' ? 'Woche' : 'Monat'}</span>
+                                </button>
+                                <button onClick={() => window.print()} className={`w-full py-4 rounded-[24px] border flex flex-col items-center gap-2 transition-all ${cardClasses} hover:bg-slate-500/10`}>
+                                    <Icon name="printer" size={20} className="text-slate-500"/>
+                                    <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">Drucken / PDF</span>
+                                </button>
+                            </div>
                         </aside>
 
                         {/* Main Grid Area */}
@@ -418,11 +469,12 @@
                                                     const counts = getDayCounts(day);
                                                     const isH = !!holidays[k];
                                                     const isW = day.getDay() === 0 || day.getDay() === 6;
+                                                    // Warnung jetzt auch am Wochenende aktiv (isW Bedingung entfernt)
                                                     const lowStaff = (counts.FD < 2 || counts.SD < 2 || counts.ND < 2);
                                                     return (
                                                         <th key={k} className={`p-2 border-b ${isDarkMode ? 'border-white/10' : 'border-slate-200'} min-w-[70px] ${isH ? 'bg-amber-500/20' : isW ? 'bg-blue-500/10' : ''}`}>
                                                             <div className="flex flex-col items-center relative py-1">
-                                                                {lowStaff && !isW && <div className="absolute -top-1 -right-1 text-rose-500 animate-pulse"><Icon name="alert-triangle" size={12} className="text-rose-500"/></div>}
+                                                                {lowStaff && <div className="absolute -top-1 -right-1 text-rose-500 animate-pulse"><Icon name="alert-triangle" size={12} className="text-rose-500"/></div>}
                                                                 <span className="text-[8px] uppercase font-bold opacity-50">{day.toLocaleDateString('de-DE', { weekday: 'short' })}</span>
                                                                 <span className={`text-sm font-black ${isH ? 'text-amber-500' : isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{day.getDate()}</span>
                                                             </div>
@@ -436,7 +488,7 @@
                                                 const empSoll = monthSollBase * (parseFloat(emp.status) / 100);
                                                 const empRost = roster[emp.id] || {};
                                                 const empNotes = notes[emp.id] || {};
-                                                const ist = Object.values(empRost).reduce((acc, code) => acc + (DEFAULT_SHIFTS[code]?.hours || 0), 0);
+                                                const ist = Object.values(empRost).reduce((acc, code) => acc + (shifts[code]?.hours || 0), 0);
                                                 const diff = ist - empSoll;
                                                 return (
                                                     <tr key={emp.id} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, 'employee', rIdx)} className={`group transition-colors ${isDarkMode ? 'hover:bg-white/[0.02]' : 'hover:bg-slate-50'}`}>
@@ -466,7 +518,7 @@
                                                             const isH = !!holidays[k];
                                                             return (
                                                                 <td key={k} onClick={() => toggleShift(emp.id, day)} className={`p-1 border-r ${isDarkMode ? 'border-white/[0.02]' : 'border-slate-100'} transition-all ${isEditMode ? 'cursor-pointer' : ''} ${isH ? 'bg-amber-500/5' : ''}`}>
-                                                                    <div className={`shift-cell rounded-lg flex flex-col items-center justify-center transition-all ${s ? `${DEFAULT_SHIFTS[s].color} ${DEFAULT_SHIFTS[s].textColor} shadow-md scale-105 border ${isDarkMode ? 'border-white/10' : 'border-black/5'}` : isEditMode ? (isDarkMode ? 'hover:bg-white/5' : 'hover:bg-slate-100') : ''}`}>
+                                                                    <div className={`shift-cell rounded-lg flex flex-col items-center justify-center transition-all ${s && shifts[s] ? `${shifts[s].color} ${shifts[s].textColor} shadow-md scale-105 border ${isDarkMode ? 'border-white/10' : 'border-black/5'}` : isEditMode ? (isDarkMode ? 'hover:bg-white/5' : 'hover:bg-slate-100') : ''}`}>
                                                                         <span className="text-[10px] font-black leading-none">{s || ''}</span>
                                                                         {n && <span className="text-[7px] font-bold leading-tight mt-1 bg-black/60 backdrop-blur-sm rounded-sm px-1 text-white line-clamp-2 max-w-[65px] text-center">{n}</span>}
                                                                     </div>
@@ -525,12 +577,12 @@
                     {isSettingsOpen && (
                         <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
                             <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setIsSettingsOpen(false)}></div>
-                            <div className={`relative ${isDarkMode ? 'bg-[#0f172a] border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'} border rounded-[32px] w-full max-w-lg p-8 shadow-2xl animate-in zoom-in duration-200`}>
+                            <div className={`relative ${isDarkMode ? 'bg-[#0f172a] border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'} border rounded-[32px] w-full max-w-xl max-h-[90vh] overflow-y-auto custom-scrollbar p-8 shadow-2xl animate-in zoom-in duration-200`}>
                                 <div className="flex justify-between items-center mb-6">
                                     <h2 className="text-2xl font-black uppercase flex items-center gap-3"><Icon name="settings" className="text-slate-400"/> Einstellungen</h2>
                                     <button onClick={() => setIsSettingsOpen(false)} className="p-2 rounded-full hover:bg-slate-500/20"><Icon name="x"/></button>
                                 </div>
-                                <div className="space-y-6">
+                                <div className="space-y-8">
                                     <div>
                                         <p className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Kollegen Management</p>
                                         <button onClick={() => { const n = prompt("Name, Vorname:"); if (n) setEmployees([...employees, { id: Date.now().toString(), name: n, role: 'Pflegekraft', status: '100', prevOvertime: 0 }]); }} className="w-full py-4 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 rounded-2xl font-black text-xs uppercase flex items-center justify-center gap-2 hover:bg-emerald-500/20 transition-all">
@@ -545,6 +597,29 @@
                                                     {key === 'status' ? 'VZ%' : key === 'soll' ? 'Soll' : key === 'ist' ? 'Ist' : key === 'diff' ? '+/-' : 'Vmt'}
                                                 </button>
                                             ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="border-t border-white/10 pt-6">
+                                        <p className="text-[10px] font-black uppercase text-slate-500 mb-3 tracking-widest">Dienste verwalten</p>
+                                        <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-2 mb-4">
+                                            {Object.entries(shifts).map(([code, cfg]) => (
+                                                <div key={code} className={`flex items-center gap-2 p-2 rounded-xl border ${isDarkMode ? 'bg-black/20 border-white/5' : 'bg-slate-50 border-slate-200'}`}>
+                                                    <input className={`w-12 font-black text-[10px] bg-transparent outline-none text-center ${cfg.color} ${cfg.textColor} rounded`} value={code} disabled />
+                                                    <input className="flex-1 font-bold text-xs bg-transparent outline-none" value={cfg.label} onChange={(e) => updateShift(code, 'label', e.target.value)} />
+                                                    <input type="number" step="0.1" className="w-14 font-mono text-xs bg-transparent outline-none text-right" value={cfg.hours} onChange={(e) => updateShift(code, 'hours', parseFloat(e.target.value))} />
+                                                    <button onClick={() => deleteShift(code)} className="p-1 text-slate-500 hover:text-rose-500 transition-colors"><Icon name="trash-2" size={14}/></button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div className={`flex flex-wrap items-center gap-2 p-3 rounded-xl border ${isDarkMode ? 'bg-blue-500/10 border-blue-500/20' : 'bg-blue-50 border-blue-200'}`}>
+                                            <input placeholder="Kürzel" className={`w-14 text-xs font-black outline-none uppercase p-1 rounded ${isDarkMode ? 'bg-black/40 text-white' : 'bg-white'}`} value={newShiftCode} onChange={e => setNewShiftCode(e.target.value.toUpperCase().slice(0, 3))} />
+                                            <input placeholder="Bezeichnung" className={`flex-1 text-xs font-bold outline-none p-1 rounded ${isDarkMode ? 'bg-black/40 text-white' : 'bg-white'}`} value={newShiftLabel} onChange={e => setNewShiftLabel(e.target.value)} />
+                                            <input type="number" step="0.1" placeholder="Std." className={`w-16 text-xs font-mono outline-none text-right p-1 rounded ${isDarkMode ? 'bg-black/40 text-white' : 'bg-white'}`} value={newShiftHours} onChange={e => setNewShiftHours(e.target.value)} />
+                                            <select className={`w-24 text-xs outline-none p-1 rounded ${isDarkMode ? 'bg-black/40 text-white' : 'bg-white'}`} value={newShiftColor} onChange={e => setNewShiftColor(e.target.value)}>
+                                                {COLOR_OPTIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                                            </select>
+                                            <button onClick={handleAddShift} className="p-1.5 bg-blue-500 text-white rounded hover:bg-blue-400 shadow-md"><Icon name="plus" size={14}/></button>
                                         </div>
                                     </div>
                                 </div>
@@ -577,7 +652,7 @@
                                             <h3 className="font-black uppercase mb-2 flex items-center gap-2"><Icon name="alert-triangle" className="text-rose-500" size={16}/> Logik & Warnungen</h3>
                                             <ul className="list-disc pl-4 space-y-1 opacity-80">
                                                 <li>NRW-Feiertage werden live berechnet</li>
-                                                <li>Warnsymbol bei Besetzung unter 2 Personen</li>
+                                                <li>Warnsymbol bei Besetzung unter 2 Personen (auch am Wochenende)</li>
                                             </ul>
                                         </section>
                                         <section>
@@ -585,14 +660,14 @@
                                             <ul className="list-disc pl-4 space-y-1 opacity-80">
                                                 <li>Notiz-Funktion direkt im Dienst</li>
                                                 <li>Stufenloser Zoom-Regler</li>
-                                                <li>Wochen- oder Monatsansicht wählbar</li>
+                                                <li>Drucken / PDF-Export über die Seitenleiste</li>
                                             </ul>
                                         </section>
                                         <section>
                                             <h3 className="font-black uppercase mb-2 flex items-center gap-2"><Icon name="edit-3" className="text-emerald-500" size={16}/> Management</h3>
                                             <ul className="list-disc pl-4 space-y-1 opacity-80">
                                                 <li>Drag & Drop für Kollegen (im Edit-Modus)</li>
-                                                <li>Individuelle VZ% und Überstunden (Klick auf Name)</li>
+                                                <li>Dienste, Namen, Rollen & Arbeitszeit individuell anpassbar</li>
                                             </ul>
                                         </section>
                                     </div>
@@ -608,30 +683,66 @@
                             <div className={`relative ${isDarkMode ? 'bg-[#0f172a] border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'} border rounded-[32px] w-full max-w-md p-8 shadow-2xl animate-in zoom-in duration-200`}>
                                 <div className="flex items-center justify-between mb-8">
                                     <h2 className="text-xl font-black uppercase tracking-tighter flex items-center gap-3">
-                                        <Icon name="settings" className="text-blue-500" size={24}/> {editingEmp.name}
+                                        <Icon name="user" className="text-blue-500" size={24}/> Mitarbeiter bearbeiten
                                     </h2>
                                     <button onClick={() => setEditingEmp(null)} className="p-2 hover:bg-slate-500/20 rounded-full transition-colors">
                                         <Icon name="x" />
                                     </button>
                                 </div>
-                                <div className="space-y-6">
+                                <div className="space-y-4">
                                     <div>
-                                        <label className="text-[10px] font-black text-slate-500 uppercase mb-2 block tracking-widest">Arbeitszeit-Prozent (%)</label>
+                                        <label className="text-[10px] font-black text-slate-500 uppercase mb-2 block tracking-widest">Name, Vorname</label>
                                         <input 
-                                            type="number" 
-                                            value={editingEmp.status} 
-                                            onChange={(e) => updateEmployeeData(editingEmp.id, 'status', e.target.value)} 
-                                            className={`w-full border rounded-2xl p-4 font-black outline-none focus:border-blue-500 transition-all text-xl ${isDarkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
+                                            type="text" 
+                                            value={editingEmp.name} 
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                setEditingEmp({...editingEmp, name: val});
+                                                updateEmployeeData(editingEmp.id, 'name', val);
+                                            }} 
+                                            className={`w-full border rounded-xl p-3 font-black outline-none focus:border-blue-500 transition-all text-base ${isDarkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
                                         />
                                     </div>
                                     <div>
-                                        <label className="text-[10px] font-black text-slate-500 uppercase mb-2 block tracking-widest">Überstunden Vormonat (h)</label>
+                                        <label className="text-[10px] font-black text-slate-500 uppercase mb-2 block tracking-widest">Beruf / Rolle</label>
                                         <input 
-                                            type="number" 
-                                            value={editingEmp.prevOvertime} 
-                                            onChange={(e) => updateEmployeeData(editingEmp.id, 'prevOvertime', e.target.value)} 
-                                            className={`w-full border rounded-2xl p-4 font-black outline-none focus:border-blue-500 transition-all text-xl text-blue-500 ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200'}`} 
+                                            type="text" 
+                                            value={editingEmp.role} 
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                setEditingEmp({...editingEmp, role: val});
+                                                updateEmployeeData(editingEmp.id, 'role', val);
+                                            }} 
+                                            className={`w-full border rounded-xl p-3 font-bold outline-none focus:border-blue-500 transition-all text-sm ${isDarkMode ? 'bg-white/5 border-white/10 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-600'}`} 
                                         />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4 pt-2">
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-500 uppercase mb-2 block tracking-widest">VZ (%)</label>
+                                            <input 
+                                                type="number" 
+                                                value={editingEmp.status} 
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    setEditingEmp({...editingEmp, status: val});
+                                                    updateEmployeeData(editingEmp.id, 'status', val);
+                                                }} 
+                                                className={`w-full border rounded-xl p-3 font-black outline-none focus:border-blue-500 transition-all text-base ${isDarkMode ? 'bg-white/5 border-white/10 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-500 uppercase mb-2 block tracking-widest">Überst. (h)</label>
+                                            <input 
+                                                type="number" 
+                                                value={editingEmp.prevOvertime} 
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    setEditingEmp({...editingEmp, prevOvertime: val});
+                                                    updateEmployeeData(editingEmp.id, 'prevOvertime', val);
+                                                }} 
+                                                className={`w-full border rounded-xl p-3 font-black outline-none focus:border-blue-500 transition-all text-base text-blue-500 ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200'}`} 
+                                            />
+                                        </div>
                                     </div>
                                     <button onClick={() => setEditingEmp(null)} className="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-blue-600/30 active:scale-95 transition-all text-white mt-4">Fertigstellen</button>
                                 </div>
