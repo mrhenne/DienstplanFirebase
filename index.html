@@ -81,14 +81,36 @@
         const db = firebase.firestore();
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'helios-notaufnahme-duisburg';
 
-        // Stabilere Icon-Komponente für HTML
+        // Stabilere Icon-Komponente für HTML (verhindert DOM-Konflikte mit React)
         const Icon = ({ name, size = 18, className = "" }) => {
+            const spanRef = useRef(null);
+
             useEffect(() => {
-                if (window.lucide) {
-                    window.lucide.createIcons();
+                if (!spanRef.current || !window.lucide) return;
+                
+                // Bereinige den Span-Inhalt, damit React nicht irritiert wird
+                spanRef.current.innerHTML = '';
+                
+                // Erstelle ein neues i-Element für Lucide
+                const i = document.createElement('i');
+                i.setAttribute('data-lucide', name);
+                spanRef.current.appendChild(i);
+                
+                // Lass Lucide nur innerhalb dieses Spans arbeiten
+                window.lucide.createIcons({
+                    root: spanRef.current
+                });
+                
+                // Passe die Größe an
+                const svg = spanRef.current.querySelector('svg');
+                if (svg) {
+                    svg.setAttribute('width', size);
+                    svg.setAttribute('height', size);
                 }
-            });
-            return <i data-lucide={name} style={{ width: size, height: size }} className={`inline-flex items-center justify-center ${className}`}></i>;
+            }, [name, size]);
+
+            // React überwacht nur den äußeren Span ohne Kinder, was Abstürze verhindert
+            return <span ref={spanRef} className={`inline-flex items-center justify-center ${className}`}></span>;
         };
 
         const getHolidaysNRW = (year) => {
@@ -400,7 +422,7 @@
                                                     return (
                                                         <th key={k} className={`p-2 border-b ${isDarkMode ? 'border-white/10' : 'border-slate-200'} min-w-[70px] ${isH ? 'bg-amber-500/20' : isW ? 'bg-blue-500/10' : ''}`}>
                                                             <div className="flex flex-col items-center relative py-1">
-                                                                {lowStaff && !isW && <div className="absolute -top-1 -right-1 text-rose-500 animate-pulse"><Icon name="alert-triangle" size={12}/></div>}
+                                                                {lowStaff && !isW && <div className="absolute -top-1 -right-1 text-rose-500 animate-pulse"><Icon name="alert-triangle" size={12} className="text-rose-500"/></div>}
                                                                 <span className="text-[8px] uppercase font-bold opacity-50">{day.toLocaleDateString('de-DE', { weekday: 'short' })}</span>
                                                                 <span className={`text-sm font-black ${isH ? 'text-amber-500' : isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{day.getDate()}</span>
                                                             </div>
