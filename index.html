@@ -7,17 +7,17 @@ import {
   XCircle, Plane, Printer, Save, Info, BookOpen, AlertTriangle, Lock, 
   Unlock, Maximize, Minimize, Cloud, FileText, Settings, Search, Layout,
   Trash2, UserPlus, GripVertical, StickyNote, Palette, ListFilter,
-  Monitor, Smartphone, X
+  Monitor, Smartphone, X, Edit3, Check
 } from 'lucide-react';
 
-// --- Firebase Initialisierung (Gemäß System-Vorgaben) ---
+// --- Firebase Setup ---
 const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'helios-notaufnahme-duisburg';
 
-// --- Hilfsfunktionen für NRW-Feiertage ---
+// --- Hilfslogik für NRW-Feiertage ---
 const getHolidaysNRW = (year) => {
   const f = Math.floor, G = year % 19, C = f(year / 100), H = (C - f(C / 4) - f((8 * C + 13) / 25) + 19 * G + 15) % 30, 
         I = H - f(H / 28) * (1 - f(29 / (H + 1)) * f((21 - G) / 11)), 
@@ -34,22 +34,25 @@ const getHolidaysNRW = (year) => {
   };
 };
 
-const calculateWorkingDays = (year, month) => {
-  const h = getHolidaysNRW(year); let count = 0; const d = new Date(year, month, 1);
-  while (d.getMonth() === month) {
-    const k = d.toISOString().split('T')[0];
-    if (d.getDay() !== 0 && d.getDay() !== 6 && !h[k]) count++;
-    d.setDate(d.getDate() + 1);
-  }
-  return count;
-};
-
 const INITIAL_EMPLOYEES = [
   { id: '1', name: 'Adams, Hendrik', role: 'Stationsleitung', status: '100%', prevOvertime: 0 },
   { id: '2', name: 'Fuchsa, Jennifer', role: 'stellv. Leitung', status: '100%', prevOvertime: 0 },
-  { id: '3', name: 'Günter, Stephanie', role: 'Fachkraft', status: '100%', prevOvertime: 0 },
-  { id: '4', name: 'Blank, Alexandra', role: 'Fachkraft', status: '100%', prevOvertime: 0 },
-  { id: '5', name: 'Friedrich, Kristina', role: 'Fachkraft', status: '100%', prevOvertime: 0 },
+  { id: '3', name: 'Günter, Stephanie', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '4', name: 'Blank, Alexandra', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '5', name: 'Friedrich, Kristina', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '6', name: 'Weienberg, Hanna', role: 'Fachkraft', status: '100%', prevOvertime: 0 },
+  { id: '7', name: 'Hackmann, Matthias', role: 'Pflegekraft', status: '90%', prevOvertime: 0 },
+  { id: '8', name: 'Buchmüller, Jörg', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '9', name: 'Rösken, Katrin', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '10', name: 'Theißen, Jennifer', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '11', name: 'Daniels, Justin', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '12', name: 'Kaymaz, Melda', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '13', name: 'Kühn, Philipp', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '14', name: 'Strachanski, Julia', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '15', name: 'Preußner, Pauline', role: 'Azubi', status: '100%', prevOvertime: 0 },
+  { id: '16', name: 'Bielok, Lara', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '17', name: 'Wüstkamp, Bianca', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
+  { id: '18', name: 'Bondzau, Martina', role: 'Pflegekraft', status: '100%', prevOvertime: 0 }
 ];
 
 const DEFAULT_SHIFTS = {
@@ -75,6 +78,8 @@ const App = () => {
   const [activeShift, setActiveShift] = useState('FD');
   const [isEditMode, setIsEditMode] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [isYearOpen, setIsYearOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [viewMode, setViewMode] = useState('month'); 
   const [zoom, setZoom] = useState(1);
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -90,21 +95,16 @@ const App = () => {
         } else {
           await signInAnonymously(auth);
         }
-      } catch (e) {
-        console.error("Auth Fehler:", e);
-      }
+      } catch (e) { console.error("Auth Fehler:", e); }
     };
     performAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-    });
+    const unsubscribe = onAuthStateChanged(auth, setUser);
     return () => unsubscribe();
   }, []);
 
   // --- Echtzeit-Sync ---
   useEffect(() => {
     if (!user) return;
-    
     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rosterPlan', 'main');
     const unsub = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -116,10 +116,7 @@ const App = () => {
         if (data.shiftOrder) setShiftOrder(data.shiftOrder);
         if (data.columnOrder) setColumnOrder(data.columnOrder);
       }
-    }, (err) => {
-      console.error("Firestore Fehler:", err);
     });
-    
     return () => unsub();
   }, [user]);
 
@@ -132,15 +129,26 @@ const App = () => {
         employees, roster, notes, shifts, shiftOrder, columnOrder,
         updatedAt: serverTimestamp()
       }, { merge: true });
-    } catch (e) {
-      console.error("Speicherfehler:", e);
-    }
+    } catch (e) { console.error("Cloud-Sicherung fehlgeschlagen", e); }
     setTimeout(() => setIsSyncing(false), 800);
   };
 
+  // --- Hilfsfunktionen für Berechnungen ---
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   const holidays = useMemo(() => getHolidaysNRW(year), [year]);
+  
+  const calculateWorkingDays = (y, m) => {
+    const h = getHolidaysNRW(y);
+    let count = 0;
+    const d = new Date(y, m, 1);
+    while (d.getMonth() === m) {
+      const k = d.toISOString().split('T')[0];
+      if (d.getDay() !== 0 && d.getDay() !== 6 && !h[k]) count++;
+      d.setDate(d.getDate() + 1);
+    }
+    return count;
+  };
   const workDays = useMemo(() => calculateWorkingDays(year, month), [year, month]);
   const monthSollBase = workDays * 7.7;
 
@@ -157,9 +165,10 @@ const App = () => {
   const toggleShift = (empId, date) => {
     if (!isEditMode) return;
     const dateKey = date.toISOString().split('T')[0];
+    
     if (activeShift === 'NOTE') {
       const currentNote = (notes[empId] || {})[dateKey] || "";
-      const text = prompt("Notiz für diesen Tag:", currentNote);
+      const text = prompt("Notiz für den " + date.toLocaleDateString() + ":", currentNote);
       if (text !== null) {
         setNotes(prev => ({
           ...prev,
@@ -168,49 +177,55 @@ const App = () => {
       }
       return;
     }
+
     setRoster(prev => {
-      const empData = { ...(prev[empId] || {}) };
-      empData[dateKey] = empData[dateKey] === activeShift ? null : activeShift;
-      return { ...prev, [empId]: empData };
+      const empRoster = { ...(prev[empId] || {}) };
+      empRoster[dateKey] = empRoster[dateKey] === activeShift ? null : activeShift;
+      return { ...prev, [empId]: empRoster };
     });
   };
 
+  const getDayCounts = (date) => {
+    const key = date.toISOString().split('T')[0];
+    const counts = { FD: 0, SD: 0, ND: 0, ZD: 0 };
+    Object.values(roster).forEach(empRost => {
+      const s = empRost[key];
+      if (counts[s] !== undefined) counts[s]++;
+    });
+    return counts;
+  };
+
+  // --- Drag & Drop Funktionen ---
   const handleDragStart = (e, type, index) => {
     if (!isEditMode) return e.preventDefault();
     setDragItem({ type, index });
   };
 
-  const handleDragOver = (e) => e.preventDefault();
+  const handleDragOver = (e) => {
+    e.preventDefault();
+  };
 
   const handleDrop = (e, type, index) => {
     if (!isEditMode || !dragItem || dragItem.type !== type) return;
-    
     if (type === 'employee') {
-      const newEmployees = [...employees];
-      const [moved] = newEmployees.splice(dragItem.index, 1);
-      newEmployees.splice(index, 0, moved);
-      setEmployees(newEmployees);
+      const list = [...employees];
+      const [moved] = list.splice(dragItem.index, 1);
+      list.splice(index, 0, moved);
+      setEmployees(list);
     } else if (type === 'column') {
-      const newOrder = [...columnOrder];
-      const [moved] = newOrder.splice(dragItem.index, 1);
-      newOrder.splice(index, 0, moved);
-      setColumnOrder(newOrder);
-    } else if (type === 'shift') {
-      const newOrder = [...shiftOrder];
-      const [moved] = newOrder.splice(dragItem.index, 1);
-      newOrder.splice(index, 0, moved);
-      setShiftOrder(newOrder);
+      const list = [...columnOrder];
+      const [moved] = list.splice(dragItem.index, 1);
+      list.splice(index, 0, moved);
+      setColumnOrder(list);
     }
     setDragItem(null);
   };
 
   return (
-    <div className={`min-h-screen ${isDarkMode ? 'bg-[#020617] text-slate-200' : 'bg-slate-50 text-slate-900'} font-sans p-2 md:p-4 overflow-hidden flex flex-col transition-colors duration-500`}>
-      <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-600/5 rounded-full blur-[120px] pointer-events-none"></div>
-
-      <header className={`flex flex-wrap items-center justify-between mb-4 ${isDarkMode ? 'bg-white/5' : 'bg-white shadow-sm'} backdrop-blur-2xl border border-white/10 p-3 rounded-2xl`}>
+    <div className={`min-h-screen ${isDarkMode ? 'bg-[#020617] text-slate-200' : 'bg-slate-50 text-slate-900'} font-sans p-2 md:p-4 overflow-hidden flex flex-col transition-all duration-300`}>
+      <header className={`flex flex-wrap items-center justify-between mb-4 bg-white/5 backdrop-blur-3xl border border-white/10 p-3 rounded-2xl no-print`}>
         <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-500 rounded-xl flex items-center justify-center shadow-lg">
+          <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-500 rounded-xl flex items-center justify-center">
             <Calendar className="text-white" size={20} />
           </div>
           <div>
@@ -224,10 +239,10 @@ const App = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 mt-2 sm:mt-0">
+        <div className="flex items-center gap-3">
           <div className="flex items-center bg-black/40 p-1 rounded-xl border border-white/5">
             <button onClick={() => setCurrentDate(new Date(year, month - 1, 1))} className="p-1 hover:bg-white/10 rounded-lg"><ChevronLeft size={16}/></button>
-            <div className="px-3 font-bold text-xs min-w-[120px] text-center uppercase tracking-wider cursor-pointer hover:text-blue-400 transition-colors">
+            <div onClick={() => setIsYearOpen(true)} className="px-3 font-bold text-xs min-w-[120px] text-center uppercase tracking-wider cursor-pointer hover:text-blue-400 transition-colors">
               {currentDate.toLocaleString('de-DE', { month: 'long', year: 'numeric' })}
             </div>
             <button onClick={() => setCurrentDate(new Date(year, month + 1, 1))} className="p-1 hover:bg-white/10 rounded-lg"><ChevronRight size={16}/></button>
@@ -245,13 +260,13 @@ const App = () => {
             </button>
             <button 
               onClick={() => setIsEditMode(!isEditMode)} 
-              className={`p-2 rounded-xl border transition-all ${isEditMode ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-lg shadow-emerald-500/10' : 'bg-white/5 border-white/10 text-slate-400'}`}
-              title="Edit-Modus umschalten"
+              className={`p-2 rounded-xl border transition-all ${isEditMode ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-lg' : 'bg-white/5 border-white/10 text-slate-400'}`}
             >
               {isEditMode ? <Unlock size={18} /> : <Lock size={18} />}
             </button>
-            <button onClick={() => setIsInfoOpen(true)} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-blue-400 transition-all"><Info size={18} /></button>
-            <button onClick={saveToCloud} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-black shadow-lg shadow-blue-600/20 flex items-center gap-2 active:scale-95 transition-all">
+            <button onClick={() => setIsSettingsOpen(true)} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-slate-400"><Settings size={18}/></button>
+            <button onClick={() => setIsInfoOpen(true)} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-blue-400"><Info size={18} /></button>
+            <button onClick={saveToCloud} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-black shadow-lg flex items-center gap-2 transition-all">
               <Save size={14} className={isSyncing ? 'animate-spin' : ''}/> Sichern
             </button>
           </div>
@@ -259,13 +274,13 @@ const App = () => {
       </header>
 
       <div className="flex flex-1 gap-4 overflow-hidden relative">
-        <aside className="w-14 md:w-44 flex flex-col gap-3 overflow-y-auto no-scrollbar pb-20 md:pb-0">
+        <aside className="w-14 md:w-44 flex flex-col gap-3 overflow-y-auto no-scrollbar pb-20 no-print">
           <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>
             <p className="text-[10px] font-black text-slate-500 mb-3 uppercase hidden md:flex items-center gap-2"><Layout size={12}/> Palette</p>
             <div className="flex flex-col gap-2">
               <button 
                 onClick={() => setActiveShift('NOTE')}
-                className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${activeShift === 'NOTE' ? 'bg-amber-600/20 border-amber-600 scale-105 shadow-lg shadow-amber-600/10' : 'bg-black/20 border-white/5 hover:border-white/10'}`}
+                className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${activeShift === 'NOTE' ? 'bg-amber-600/20 border-amber-600 scale-105' : 'bg-black/20 border-white/5'}`}
               >
                 <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center shadow-sm">
                   <StickyNote className="text-amber-950" size={14}/>
@@ -273,17 +288,13 @@ const App = () => {
                 <span className="text-[10px] font-black hidden md:block uppercase truncate">Notiz</span>
               </button>
               
-              {shiftOrder.map((key, idx) => {
+              {shiftOrder.map(key => {
                 const cfg = shifts[key];
                 return (
                   <button 
                     key={key}
-                    draggable={isEditMode}
-                    onDragStart={(e) => handleDragStart(e, 'shift', idx)}
-                    onDragOver={handleDragOver}
-                    onDrop={(e) => handleDrop(e, 'shift', idx)}
                     onClick={() => setActiveShift(key)}
-                    className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${isEditMode ? 'cursor-move' : ''} ${activeShift === key ? 'bg-blue-600/20 border-blue-600 scale-105 shadow-lg shadow-blue-600/10' : 'bg-black/20 border-white/5 hover:border-white/10'}`}
+                    className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${activeShift === key ? 'bg-blue-600/20 border-blue-600 scale-105' : 'bg-black/20 border-white/5'}`}
                   >
                     <div className={`w-8 h-8 rounded-lg ${cfg.color} flex items-center justify-center shadow-sm`}>
                       <span className={`text-[10px] font-black ${cfg.textColor}`}>{key}</span>
@@ -300,7 +311,7 @@ const App = () => {
             className="w-full py-3 bg-white/5 border border-white/10 rounded-xl flex flex-col items-center justify-center gap-1 hover:bg-white/10 transition-all text-slate-500"
           >
             {viewMode === 'month' ? <Monitor size={18}/> : <Smartphone size={18}/>}
-            <span className="text-[8px] font-black uppercase">{viewMode === 'month' ? 'Wochen-Ansicht' : 'Monats-Ansicht'}</span>
+            <span className="text-[8px] font-black uppercase tracking-widest">{viewMode === 'month' ? 'Woche' : 'Monat'}</span>
           </button>
         </aside>
 
@@ -313,12 +324,12 @@ const App = () => {
                   
                   {columnOrder.map((key, idx) => (
                     <th 
-                      key={key}
+                      key={key} 
                       draggable={isEditMode}
                       onDragStart={(e) => handleDragStart(e, 'column', idx)}
                       onDragOver={handleDragOver}
                       onDrop={(e) => handleDrop(e, 'column', idx)}
-                      className={`p-2 text-center text-[10px] font-black border-b border-white/10 uppercase transition-all ${isEditMode ? 'cursor-move hover:bg-white/5' : ''}`}
+                      className={`p-2 text-center text-[10px] font-black border-b border-white/10 uppercase ${isEditMode ? 'cursor-move hover:bg-white/5' : ''}`}
                     >
                       <div className="flex items-center justify-center gap-1">
                         {isEditMode && <GripVertical size={10} className="text-slate-600" />}
@@ -329,11 +340,15 @@ const App = () => {
 
                   {visibleDays.map(day => {
                     const k = day.toISOString().split('T')[0];
+                    const counts = getDayCounts(day);
                     const isH = !!holidays[k];
                     const isW = day.getDay() === 0 || day.getDay() === 6;
+                    const lowStaff = (counts.FD < 3 || counts.SD < 3) && !isW;
+
                     return (
-                      <th key={k} className={`p-2 border-b border-white/10 min-w-[45px] ${isH ? 'bg-amber-500/20' : isW ? 'bg-blue-500/10' : ''}`}>
-                        <div className="flex flex-col items-center">
+                      <th key={k} className={`p-2 border-b border-white/10 min-w-[55px] ${isH ? 'bg-amber-500/20' : isW ? 'bg-blue-500/10' : ''}`}>
+                        <div className="flex flex-col items-center relative">
+                          {lowStaff && <div className="absolute -top-1 -right-1 text-rose-500 animate-pulse" title="Unterbesetzung! (FD/SD < 3)"><AlertTriangle size={10}/></div>}
                           <span className="text-[8px] uppercase font-bold opacity-50">{day.toLocaleDateString('de-DE', { weekday: 'short' })}</span>
                           <span className={`text-xs font-black ${isH ? 'text-amber-400' : isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{day.getDate()}</span>
                         </div>
@@ -345,25 +360,27 @@ const App = () => {
               <tbody>
                 {employees.map((emp, rIdx) => {
                   const empSoll = monthSollBase * (parseInt(emp.status) / 100);
-                  const empRoster = roster[emp.id] || {};
+                  const empRost = roster[emp.id] || {};
                   const empNotes = notes[emp.id] || {};
-                  const ist = Object.values(empRoster).reduce((acc, code) => acc + (shifts[code]?.hours || 0), 0);
+                  const ist = Object.values(empRost).reduce((acc, code) => acc + (shifts[code]?.hours || 0), 0);
                   const diff = ist - empSoll;
 
                   return (
                     <tr 
                       key={emp.id} 
-                      draggable={isEditMode}
-                      onDragStart={(e) => handleDragStart(e, 'employee', rIdx)}
                       onDragOver={handleDragOver}
                       onDrop={(e) => handleDrop(e, 'employee', rIdx)}
-                      className={`group hover:bg-white/[0.03] transition-colors ${isEditMode ? 'cursor-move' : ''}`}
+                      className="group transition-colors"
                     >
-                      <td className={`p-3 sticky left-0 z-40 border-r border-white/5 shadow-xl ${isDarkMode ? 'bg-[#0f172a]' : 'bg-white'}`}>
+                      <td 
+                        draggable={isEditMode}
+                        onDragStart={(e) => handleDragStart(e, 'employee', rIdx)}
+                        className={`p-3 sticky left-0 z-40 border-r border-white/5 shadow-xl ${isDarkMode ? 'bg-[#0f172a]' : 'bg-white'} ${isEditMode ? 'cursor-move' : ''}`}
+                      >
                         <div className="flex items-center gap-2">
                           {isEditMode && <GripVertical size={12} className="text-slate-600"/>}
-                          <div>
-                            <div className="font-black text-[11px] uppercase">{emp.name}</div>
+                          <div onClick={() => isEditMode && prompt("Mitarbeiter bearbeiten:", emp.name)}>
+                            <div className="font-black text-[11px] uppercase whitespace-nowrap">{emp.name}</div>
                             <div className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter">{emp.role}</div>
                           </div>
                         </div>
@@ -380,7 +397,7 @@ const App = () => {
 
                       {visibleDays.map(day => {
                         const k = day.toISOString().split('T')[0];
-                        const s = empRoster[k];
+                        const s = empRost[k];
                         const n = empNotes[k];
                         const isH = !!holidays[k];
                         return (
@@ -389,9 +406,9 @@ const App = () => {
                             onClick={() => toggleShift(emp.id, day)}
                             className={`p-1 border-r border-white/[0.02] text-center ${isH ? 'bg-amber-500/5' : ''} ${isEditMode ? 'cursor-pointer' : 'cursor-default'}`}
                           >
-                            <div className={`min-h-[36px] w-full rounded-lg flex flex-col items-center justify-center transition-all p-0.5 ${s ? `${shifts[s].color} ${shifts[s].textColor} shadow-lg scale-105` : 'hover:bg-white/5'}`}>
+                            <div className={`min-h-[40px] w-full rounded-lg flex flex-col items-center justify-center transition-all p-0.5 ${s ? `${shifts[s].color} ${shifts[s].textColor} shadow-lg scale-105` : 'hover:bg-white/5'}`}>
                               <span className="text-[10px] font-black leading-none">{s || ''}</span>
-                              {n && <span className="text-[6px] font-black leading-tight mt-0.5 opacity-80 uppercase line-clamp-2 break-all">{n}</span>}
+                              {n && <span className="text-[6px] font-black leading-tight mt-0.5 opacity-95 uppercase line-clamp-2 break-all text-current bg-white/10 rounded px-0.5">{n}</span>}
                             </div>
                           </td>
                         );
@@ -400,47 +417,132 @@ const App = () => {
                   );
                 })}
               </tbody>
+              <tfoot>
+                <tr className={`${isDarkMode ? 'bg-slate-900' : 'bg-slate-100'} sticky bottom-0 z-[70] border-t border-white/10`}>
+                  <td className={`p-2 font-black text-[9px] uppercase sticky left-0 z-[80] ${isDarkMode ? 'bg-slate-900' : 'bg-slate-100'}`}>Summen (FD/SD/ND)</td>
+                  <td colSpan={columnOrder.length} className="border-r border-white/5"></td>
+                  {visibleDays.map(day => {
+                    const c = getDayCounts(day);
+                    return (
+                      <td key={day.getTime()} className="p-1 text-center text-[8px] font-black border-r border-white/5">
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-cyan-400" title="Frühdienst">{c.FD}</span>
+                          <span className="text-fuchsia-500" title="Spätdienst">{c.SD}</span>
+                          <span className="text-orange-500" title="Nachtdienst">{c.ND}</span>
+                        </div>
+                      </td>
+                    );
+                  })}
+                </tr>
+              </tfoot>
             </table>
           </div>
         </main>
       </div>
 
-      {isInfoOpen && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 md:p-8">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsInfoOpen(false)}></div>
-          <div className="relative glass-effect bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-in zoom-in duration-300">
-            <div className="p-8 border-b border-white/10 flex items-center justify-between bg-gradient-to-r from-blue-600/10 to-transparent">
-              <div>
-                <h2 className="text-2xl font-black tracking-tight text-white mb-1">Feature-Übersicht: Dienstplan Pro</h2>
-                <p className="text-blue-400 text-sm font-bold uppercase tracking-widest">Helios Edition (v2.4.5)</p>
-              </div>
-              <button onClick={() => setIsInfoOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-all"><X size={28} /></button>
+      {/* Jahr Modal */}
+      {isYearOpen && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsYearOpen(false)}></div>
+          <div className="relative bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-2xl p-8 animate-in zoom-in duration-300">
+            <h2 className="text-2xl font-black mb-6 flex items-center gap-3"><Calendar className="text-blue-500" /> Jahresübersicht {year}</h2>
+            <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
+              {[...Array(12)].map((_, i) => (
+                <button 
+                  key={i}
+                  onClick={() => { setCurrentDate(new Date(year, i, 1)); setIsYearOpen(false); }}
+                  className={`p-4 rounded-2xl font-black text-xs uppercase border transition-all ${month === i ? 'bg-blue-600 border-blue-400 text-white' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
+                >
+                  {new Date(year, i, 1).toLocaleString('de-DE', { month: 'long' })}
+                </button>
+              ))}
             </div>
-            
-            <div className="p-8 overflow-y-auto custom-scrollbar space-y-8">
-              <div className="bg-blue-600/10 border border-blue-500/20 p-4 rounded-2xl text-slate-200 text-sm italic font-bold">
+            <button onClick={() => setIsYearOpen(false)} className="mt-8 w-full py-4 bg-white/5 rounded-2xl font-black uppercase text-xs">Schließen</button>
+          </div>
+        </div>
+      )}
+
+      {/* Einstellungen Modal */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsSettingsOpen(false)}></div>
+          <div className="relative bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-lg p-8 animate-in zoom-in duration-300">
+            <h2 className="text-2xl font-black mb-6 flex items-center gap-3"><Settings className="text-slate-400" /> Einstellungen</h2>
+            <div className="space-y-6">
+              <div>
+                <p className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Mitarbeiter hinzufügen</p>
+                <button 
+                  onClick={() => {
+                    const n = prompt("Name, Vorname:");
+                    if (n) setEmployees([...employees, { id: Date.now().toString(), name: n, role: 'Pflegekraft', status: '100%', prevOvertime: 0 }]);
+                  }}
+                  className="w-full py-3 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-2xl font-black text-xs uppercase flex items-center justify-center gap-2"
+                >
+                  <UserPlus size={14}/> Neuen Kollegen anlegen
+                </button>
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Sichtbare Spalten</p>
+                <div className="flex flex-wrap gap-2">
+                  {['status', 'soll', 'ist', 'diff', 'prev'].map(key => (
+                    <button 
+                      key={key}
+                      onClick={() => setColumnOrder(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])}
+                      className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase border transition-all ${columnOrder.includes(key) ? 'bg-blue-600 border-blue-400' : 'bg-white/5 border-white/10 opacity-40'}`}
+                    >
+                      {key}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <button onClick={() => setIsSettingsOpen(false)} className="mt-8 w-full py-4 bg-white/5 rounded-2xl font-black uppercase text-xs">Schließen</button>
+          </div>
+        </div>
+      )}
+
+      {/* Info Modal */}
+      {isInfoOpen && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsInfoOpen(false)}></div>
+          <div className="relative bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-3xl max-h-[90vh] overflow-y-auto p-8 animate-in zoom-in duration-300 custom-scrollbar">
+            <h2 className="text-2xl font-black mb-4 tracking-tight">Feature-Übersicht: Dienstplan Pro</h2>
+            <div className="space-y-6 text-slate-300 text-xs leading-relaxed">
+              <div className="bg-blue-600/10 border border-blue-500/20 p-4 rounded-2xl italic font-bold">
                 "Dieses Programm wurde speziell für die Anforderungen einer pflegerischen Leitung in der Notfallpflege entwickelt. Es kombiniert maximale Flexibilität mit automatisierter Logik."
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-slate-300 text-[11px]">
-                <div className="space-y-2">
-                  <h3 className="flex items-center gap-2 text-white font-black uppercase"><Cloud className="text-blue-400" size={16}/> 1. Daten & Sicherheit</h3>
-                  <ul className="list-disc pl-4 opacity-80">
-                    <li>Echtzeit-Cloud-Sync via Firestore</li>
-                    <li>Edit-Modus Sperrfunktion</li>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <section>
+                  <h3 className="font-black uppercase text-white mb-2 flex items-center gap-2"><Cloud className="text-blue-400" size={14}/> 1. Daten & Sicherheit</h3>
+                  <ul className="list-disc pl-4 space-y-1 opacity-80">
+                    <li>Echtzeit-Cloud-Sync via Firebase</li>
+                    <li>Edit-Modus (Schloss) schützt vor Fehlklicks</li>
                   </ul>
-                </div>
-                <div className="space-y-2">
-                  <h3 className="flex items-center gap-2 text-white font-black uppercase"><Settings className="text-emerald-400" size={16}/> 2. Logik</h3>
-                  <ul className="list-disc pl-4 opacity-80">
-                    <li>NRW-Feiertagsberechnung</li>
-                    <li>Automatische Soll-Kalkulation (7.7h)</li>
+                </section>
+                <section>
+                  <h3 className="font-black uppercase text-white mb-2 flex items-center gap-2"><AlertTriangle className="text-rose-400" size={14}/> 2. Logik & Warnungen</h3>
+                  <ul className="list-disc pl-4 space-y-1 opacity-80">
+                    <li>NRW-Feiertage werden live berechnet</li>
+                    <li>Warnsymbol bei Besetzung unter 3 Personen (FD/SD)</li>
                   </ul>
-                </div>
+                </section>
+                <section>
+                  <h3 className="font-black uppercase text-white mb-2 flex items-center gap-2"><Layout className="text-amber-400" size={14}/> 3. Bedienung</h3>
+                  <ul className="list-disc pl-4 space-y-1 opacity-80">
+                    <li>Notiz-Inline-Funktion (direkt sichtbar)</li>
+                    <li>Zoom-Regler für jede Monitorgröße</li>
+                  </ul>
+                </section>
+                <section>
+                  <h3 className="font-black uppercase text-white mb-2 flex items-center gap-2"><Edit3 className="text-emerald-400" size={14}/> 4. Management</h3>
+                  <ul className="list-disc pl-4 space-y-1 opacity-80">
+                    <li>Mitarbeiter per Drag & Drop sortieren</li>
+                    <li>Jahresansicht für schnellen Monatswechsel</li>
+                  </ul>
+                </section>
               </div>
             </div>
-            <div className="p-6 border-t border-white/10 bg-black/20 flex justify-center">
-              <button onClick={() => setIsInfoOpen(false)} className="px-12 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl">Verstanden</button>
-            </div>
+            <button onClick={() => setIsInfoOpen(false)} className="mt-8 w-full py-4 bg-blue-600 rounded-2xl font-black uppercase text-xs shadow-xl">Verstanden</button>
           </div>
         </div>
       )}
@@ -452,9 +554,9 @@ const App = () => {
         input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 12px; width: 12px; border-radius: 50%; background: #3b82f6; cursor: pointer; border: 2px solid #fff; }
         @media print {
           body { background: white !important; color: black !important; padding: 0 !important; }
-          header, aside, .no-print { display: none !important; }
-          main { border: none !important; width: 100vw !important; }
-          table { width: 100% !important; border-collapse: collapse !important; font-size: 8pt; }
+          header, aside, .no-print, tfoot { display: none !important; }
+          main { border: none !important; width: 100vw !important; transform: scale(1) !important; }
+          table { width: 100% !important; border-collapse: collapse !important; font-size: 7pt; }
           td, th { border: 0.1pt solid #ccc !important; color: black !important; background: white !important; }
         }
       `}</style>
