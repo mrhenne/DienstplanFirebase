@@ -10,21 +10,12 @@ import {
   Monitor, Smartphone, X, Edit3, Check
 } from 'lucide-react';
 
-// --- DEINE FIREBASE KONFIGURATION ---
-const firebaseConfig = {
-  apiKey: "AIzaSyD3HcZOIv6Wyg3_5xoBnSnz-Eb4fgLr0SA",
-  authDomain: "dienstplanprogramm.firebaseapp.com",
-  projectId: "dienstplanprogramm",
-  storageBucket: "dienstplanprogramm.firebasestorage.app",
-  messagingSenderId: "193664964493",
-  appId: "1:193664964493:web:e99e822739cb13c8df0fc4"
-};
-
-// Initialisierung
+// --- Firebase Setup (Zwingend über System-Variablen für diese Umgebung) ---
+const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const APP_ID = 'helios-notaufnahme-duisburg';
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'helios-notaufnahme-duisburg';
 
 // --- Hilfslogik für NRW-Feiertage ---
 const getHolidaysNRW = (year) => {
@@ -43,7 +34,6 @@ const getHolidaysNRW = (year) => {
   };
 };
 
-// --- Volle Kollegenliste ---
 const INITIAL_EMPLOYEES = [
   { id: '1', name: 'Adams, Hendrik', role: 'Stationsleitung', status: '100%', prevOvertime: 0 },
   { id: '2', name: 'Fuchsa, Jennifer', role: 'stellv. Leitung', status: '100%', prevOvertime: 0 },
@@ -96,9 +86,9 @@ const App = () => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [dragItem, setDragItem] = useState(null);
 
-  // --- Auth ---
+  // --- Auth & Firestore ---
   useEffect(() => {
-    const performAuth = async () => {
+    const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
           await signInWithCustomToken(auth, __initial_auth_token);
@@ -107,15 +97,15 @@ const App = () => {
         }
       } catch (e) { console.error("Auth Fehler:", e); }
     };
-    performAuth();
+    initAuth();
     const unsubscribe = onAuthStateChanged(auth, setUser);
     return () => unsubscribe();
   }, []);
 
-  // --- Sync ---
   useEffect(() => {
     if (!user) return;
-    const docRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rosterPlan', 'main');
+    // Pfadregel beachten: /artifacts/{appId}/public/data/{collectionName}
+    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'plans', 'main');
     const unsub = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -126,7 +116,7 @@ const App = () => {
         if (data.shiftOrder) setShiftOrder(data.shiftOrder);
         if (data.columnOrder) setColumnOrder(data.columnOrder);
       }
-    });
+    }, (err) => console.error("Snapshot Fehler:", err));
     return () => unsub();
   }, [user]);
 
@@ -134,15 +124,16 @@ const App = () => {
     if (!user) return;
     setIsSyncing(true);
     try {
-      const docRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rosterPlan', 'main');
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'plans', 'main');
       await setDoc(docRef, {
         employees, roster, notes, shifts, shiftOrder, columnOrder,
         updatedAt: serverTimestamp()
       }, { merge: true });
-    } catch (e) { console.error("Save failed", e); }
+    } catch (e) { console.error("Save fehlgeschlagen", e); }
     setTimeout(() => setIsSyncing(false), 800);
   };
 
+  // --- Logik ---
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   const holidays = useMemo(() => getHolidaysNRW(year), [year]);
@@ -204,12 +195,13 @@ const App = () => {
     return counts;
   };
 
-  // --- DND Logik ---
   const handleDragStart = (e, type, index) => {
     if (!isEditMode) return e.preventDefault();
     setDragItem({ type, index });
   };
+
   const handleDragOver = (e) => e.preventDefault();
+
   const handleDrop = (e, type, index) => {
     if (!isEditMode || !dragItem || dragItem.type !== type) return;
     if (type === 'employee') {
@@ -217,11 +209,6 @@ const App = () => {
       const [moved] = list.splice(dragItem.index, 1);
       list.splice(index, 0, moved);
       setEmployees(list);
-    } else if (type === 'column') {
-      const list = [...columnOrder];
-      const [moved] = list.splice(dragItem.index, 1);
-      list.splice(index, 0, moved);
-      setColumnOrder(list);
     }
     setDragItem(null);
   };
@@ -237,7 +224,7 @@ const App = () => {
             <h1 className="text-lg font-black tracking-tight leading-none">Dienstplan PRO</h1>
             <div className="flex items-center gap-2 mt-1">
               <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${isSyncing ? 'bg-blue-500/20 text-blue-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
-                {isSyncing ? 'Synchronisierung...' : 'Live-Sync Aktiv'}
+                {isSyncing ? 'Sync...' : 'Online'}
               </span>
               <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">{workDays} Arbeitstage</span>
             </div>
@@ -283,16 +270,20 @@ const App = () => {
           <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>
             <p className="text-[10px] font-black text-slate-500 mb-3 uppercase hidden md:flex items-center gap-2"><Layout size={12}/> Palette</p>
             <div className="flex flex-col gap-2">
-              <button onClick={() => setActiveShift('NOTE')} className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${activeShift === 'NOTE' ? 'bg-amber-600/20 border-amber-600 scale-105 shadow-lg shadow-amber-600/10' : 'bg-black/20 border-white/5'}`}>
+              <button 
+                onClick={() => setActiveShift('NOTE')}
+                className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${activeShift === 'NOTE' ? 'bg-amber-600/20 border-amber-600 scale-105 shadow-lg shadow-amber-600/10' : 'bg-black/20 border-white/5'}`}
+              >
                 <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center shadow-sm">
                   <StickyNote className="text-amber-950" size={14}/>
                 </div>
                 <span className="text-[10px] font-black hidden md:block uppercase truncate">Notiz</span>
               </button>
+              
               {shiftOrder.map(key => {
                 const cfg = shifts[key];
                 return (
-                  <button key={key} onClick={() => setActiveShift(key)} className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${activeShift === key ? 'bg-blue-600/20 border-blue-600 scale-105 shadow-lg shadow-blue-600/10' : 'bg-black/20 border-white/5'}`}>
+                  <button key={key} onClick={() => setActiveShift(key)} className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${activeShift === key ? 'bg-blue-600/20 border-blue-600 scale-105' : 'bg-black/20 border-white/5'}`}>
                     <div className={`w-8 h-8 rounded-lg ${cfg.color} flex items-center justify-center shadow-sm`}>
                       <span className={`text-[10px] font-black ${cfg.textColor}`}>{key}</span>
                     </div>
@@ -314,12 +305,9 @@ const App = () => {
               <thead>
                 <tr className={`${isDarkMode ? 'bg-slate-900' : 'bg-slate-100'} sticky top-0 z-[70]`}>
                   <th className={`p-3 text-left text-[10px] font-black border-b border-white/10 sticky left-0 z-[80] min-w-[160px] uppercase ${isDarkMode ? 'bg-slate-900' : 'bg-slate-100'}`}>Mitarbeiter</th>
-                  {columnOrder.map((key, idx) => (
-                    <th key={key} draggable={isEditMode} onDragStart={(e) => handleDragStart(e, 'column', idx)} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, 'column', idx)} className={`p-2 text-center text-[10px] font-black border-b border-white/10 uppercase ${isEditMode ? 'cursor-move hover:bg-white/5' : ''}`}>
-                      <div className="flex items-center justify-center gap-1">
-                        {isEditMode && <GripVertical size={10} className="text-slate-600" />}
-                        {key === 'status' ? 'VZ' : key === 'soll' ? 'Soll' : key === 'ist' ? 'Ist' : key === 'diff' ? '+/-' : 'Vmt'}
-                      </div>
+                  {columnOrder.map(key => (
+                    <th key={key} className="p-2 text-center text-[10px] font-black border-b border-white/10 uppercase">
+                      {key === 'status' ? 'VZ' : key === 'soll' ? 'Soll' : key === 'ist' ? 'Ist' : key === 'diff' ? '+/-' : 'Vmt'}
                     </th>
                   ))}
                   {visibleDays.map(day => {
@@ -331,7 +319,7 @@ const App = () => {
                     return (
                       <th key={k} className={`p-2 border-b border-white/10 min-w-[55px] ${isH ? 'bg-amber-500/20' : isW ? 'bg-blue-500/10' : ''}`}>
                         <div className="flex flex-col items-center relative">
-                          {lowStaff && <div className="absolute -top-1 -right-1 text-rose-500 animate-pulse" title="Unterbesetzung! (FD/SD < 3)"><AlertTriangle size={10}/></div>}
+                          {lowStaff && <div className="absolute -top-1 -right-1 text-rose-500 animate-pulse"><AlertTriangle size={10}/></div>}
                           <span className="text-[8px] uppercase font-bold opacity-50">{day.toLocaleDateString('de-DE', { weekday: 'short' })}</span>
                           <span className={`text-xs font-black ${isH ? 'text-amber-400' : isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{day.getDate()}</span>
                         </div>
@@ -352,7 +340,7 @@ const App = () => {
                       <td draggable={isEditMode} onDragStart={(e) => handleDragStart(e, 'employee', rIdx)} className={`p-3 sticky left-0 z-40 border-r border-white/5 shadow-xl ${isDarkMode ? 'bg-[#0f172a]' : 'bg-white'} ${isEditMode ? 'cursor-move' : ''}`}>
                         <div className="flex items-center gap-2">
                           {isEditMode && <GripVertical size={12} className="text-slate-600"/>}
-                          <div onClick={() => isEditMode && prompt("Mitarbeiter bearbeiten:", emp.name)}>
+                          <div onClick={() => isEditMode && prompt("Bearbeiten:", emp.name)}>
                             <div className="font-black text-[11px] uppercase whitespace-nowrap">{emp.name}</div>
                             <div className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter">{emp.role}</div>
                           </div>
@@ -373,9 +361,9 @@ const App = () => {
                         const isH = !!holidays[k];
                         return (
                           <td key={k} onClick={() => toggleShift(emp.id, day)} className={`p-1 border-r border-white/[0.02] text-center ${isH ? 'bg-amber-500/5' : ''} ${isEditMode ? 'cursor-pointer' : 'cursor-default'}`}>
-                            <div className={`min-h-[40px] w-full rounded-lg flex flex-col items-center justify-center transition-all p-0.5 ${s ? `${shifts[s].color} ${shifts[s].textColor} shadow-lg scale-105` : 'hover:bg-white/5'}`}>
+                            <div className={`min-h-[44px] w-full rounded-lg flex flex-col items-center justify-center transition-all p-0.5 ${s ? `${shifts[s].color} ${shifts[s].textColor} shadow-lg scale-105` : 'hover:bg-white/5'}`}>
                               <span className="text-[10px] font-black leading-none">{s || ''}</span>
-                              {n && <span className="text-[6px] font-black leading-tight mt-0.5 opacity-95 uppercase line-clamp-2 break-all text-current bg-white/10 rounded px-1">{n}</span>}
+                              {n && <span className="text-[7px] font-bold leading-tight mt-1 opacity-100 uppercase line-clamp-2 break-all bg-black/20 rounded px-1 text-white shadow-sm">{n}</span>}
                             </div>
                           </td>
                         );
@@ -393,9 +381,9 @@ const App = () => {
                     return (
                       <td key={day.getTime()} className="p-1 text-center text-[8px] font-black border-r border-white/5">
                         <div className="flex flex-col gap-0.5">
-                          <span className="text-cyan-400" title="Frühdienst">{c.FD}</span>
-                          <span className="text-fuchsia-500" title="Spätdienst">{c.SD}</span>
-                          <span className="text-orange-500" title="Nachtdienst">{c.ND}</span>
+                          <span className="text-cyan-400">{c.FD}</span>
+                          <span className="text-fuchsia-500">{c.SD}</span>
+                          <span className="text-orange-500">{c.ND}</span>
                         </div>
                       </td>
                     );
@@ -407,11 +395,11 @@ const App = () => {
         </main>
       </div>
 
-      {/* Modals (Year, Settings, Info) */}
+      {/* Jahr Modal */}
       {isYearOpen && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsYearOpen(false)}></div>
-          <div className="relative bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-2xl p-8 animate-in zoom-in duration-300 shadow-2xl">
+          <div className="relative bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-2xl p-8 animate-in zoom-in duration-300">
             <h2 className="text-2xl font-black mb-6 flex items-center gap-3"><Calendar className="text-blue-500" /> Jahresübersicht {year}</h2>
             <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
               {[...Array(12)].map((_, i) => (
@@ -425,6 +413,7 @@ const App = () => {
         </div>
       )}
 
+      {/* Einstellungen Modal */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsSettingsOpen(false)}></div>
@@ -432,16 +421,16 @@ const App = () => {
             <h2 className="text-2xl font-black mb-6 flex items-center gap-3"><Settings className="text-slate-400" /> Einstellungen</h2>
             <div className="space-y-6">
               <div>
-                <p className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Personal Management</p>
+                <p className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Kollegen Management</p>
                 <button onClick={() => { const n = prompt("Name, Vorname:"); if (n) setEmployees([...employees, { id: Date.now().toString(), name: n, role: 'Pflegekraft', status: '100%', prevOvertime: 0 }]); }} className="w-full py-3 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-2xl font-black text-xs uppercase flex items-center justify-center gap-2">
-                  <UserPlus size={14}/> Kollegen hinzufügen
+                  <UserPlus size={14}/> Neuen Kollegen anlegen
                 </button>
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Sichtbare Spalten</p>
+                <p className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Spalten-Filter</p>
                 <div className="flex flex-wrap gap-2">
                   {['status', 'soll', 'ist', 'diff', 'prev'].map(key => (
-                    <button key={key} onClick={() => setColumnOrder(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])} className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase border transition-all ${columnOrder.includes(key) ? 'bg-blue-600 border-blue-400 shadow-lg' : 'bg-white/5 border-white/10 opacity-40'}`}>
+                    <button key={key} onClick={() => setColumnOrder(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])} className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase border transition-all ${columnOrder.includes(key) ? 'bg-blue-600 border-blue-400' : 'bg-white/5 border-white/10 opacity-40'}`}>
                       {key}
                     </button>
                   ))}
@@ -449,51 +438,6 @@ const App = () => {
               </div>
             </div>
             <button onClick={() => setIsSettingsOpen(false)} className="mt-8 w-full py-4 bg-white/5 rounded-2xl font-black uppercase text-xs">Schließen</button>
-          </div>
-        </div>
-      )}
-
-      {isInfoOpen && (
-        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsInfoOpen(false)}></div>
-          <div className="relative bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-3xl max-h-[90vh] overflow-y-auto p-8 animate-in zoom-in duration-300 custom-scrollbar shadow-2xl">
-            <h2 className="text-2xl font-black mb-4 tracking-tight">Feature-Übersicht: Dienstplan Pro</h2>
-            <div className="space-y-6 text-slate-300 text-xs leading-relaxed">
-              <div className="bg-blue-600/10 border border-blue-500/20 p-4 rounded-2xl italic font-bold">
-                "Dieses Programm wurde speziell für die Anforderungen einer pflegerischen Leitung in der Notfallpflege entwickelt. Es kombiniert maximale Flexibilität mit automatisierter Logik."
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <section>
-                  <h3 className="font-black uppercase text-white mb-2 flex items-center gap-2"><Cloud className="text-blue-400" size={14}/> 1. Daten & Sicherheit</h3>
-                  <ul className="list-disc pl-4 space-y-1 opacity-80">
-                    <li>Echtzeit-Cloud-Sync via Firebase</li>
-                    <li>Edit-Modus (Schloss) schützt vor Fehlklicks</li>
-                  </ul>
-                </section>
-                <section>
-                  <h3 className="font-black uppercase text-white mb-2 flex items-center gap-2"><AlertTriangle className="text-rose-400" size={14}/> 2. Logik & Warnungen</h3>
-                  <ul className="list-disc pl-4 space-y-1 opacity-80">
-                    <li>NRW-Feiertage werden live berechnet</li>
-                    <li>Warnsymbol bei Besetzung unter 3 Personen (FD/SD)</li>
-                  </ul>
-                </section>
-                <section>
-                  <h3 className="font-black uppercase text-white mb-2 flex items-center gap-2"><Layout className="text-amber-400" size={14}/> 3. Bedienung</h3>
-                  <ul className="list-disc pl-4 space-y-1 opacity-80">
-                    <li>Notiz-Inline-Funktion (direkt unter dem Dienst)</li>
-                    <li>Zoom-Regler für jede Monitorgröße</li>
-                  </ul>
-                </section>
-                <section>
-                  <h3 className="font-black uppercase text-white mb-2 flex items-center gap-2"><Edit3 className="text-emerald-400" size={14}/> 4. Management</h3>
-                  <ul className="list-disc pl-4 space-y-1 opacity-80">
-                    <li>Mitarbeiter per Drag & Drop sortieren</li>
-                    <li>Jahresansicht für schnellen Monatswechsel</li>
-                  </ul>
-                </section>
-              </div>
-            </div>
-            <button onClick={() => setIsInfoOpen(false)} className="mt-8 w-full py-4 bg-blue-600 rounded-2xl font-black uppercase text-xs shadow-xl shadow-blue-600/20">Verstanden</button>
           </div>
         </div>
       )}
