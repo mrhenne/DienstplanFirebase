@@ -1,462 +1,486 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
-import { 
-  Users, Calendar, ChevronLeft, ChevronRight, Clock, Sun, Moon, Coffee, 
-  XCircle, Plane, Printer, Save, Info, BookOpen, AlertTriangle, Lock, 
-  Unlock, Maximize, Minimize, Cloud, FileText, Settings, Search, Layout,
-  Trash2, UserPlus, GripVertical, StickyNote, Palette, ListFilter,
-  Monitor, Smartphone, X, Edit3, Check
-} from 'lucide-react';
-
-// --- Firebase Setup (Zwingend über System-Variablen für diese Umgebung) ---
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'helios-notaufnahme-duisburg';
-
-// --- Hilfslogik für NRW-Feiertage ---
-const getHolidaysNRW = (year) => {
-  const f = Math.floor, G = year % 19, C = f(year / 100), H = (C - f(C / 4) - f((8 * C + 13) / 25) + 19 * G + 15) % 30, 
-        I = H - f(H / 28) * (1 - f(29 / (H + 1)) * f((21 - G) / 11)), 
-        J = (year + f(year / 4) + I + 2 - C + f(C / 4)) % 7, 
-        L = I - J, month = 3 + f((L + 40) / 44), day = L + 28 - 31 * f(month / 4);
-  const easter = new Date(year, month - 1, day);
-  const add = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r.toISOString().split('T')[0]; };
-  return {
-    [`${year}-01-01`]: "Neujahr", [add(easter, -2)]: "Karfreitag", [add(easter, 1)]: "Ostermontag",
-    [`${year}-05-01`]: "Tag der Arbeit", [add(easter, 39)]: "Christi Himmelfahrt",
-    [add(easter, 50)]: "Pfingstmontag", [add(easter, 60)]: "Fronleichnam",
-    [`${year}-10-03`]: "Tag der Dt. Einheit", [`${year}-11-01`]: "Allerheiligen",
-    [`${year}-12-25`]: "1. Weihnachtstag", [`${year}-12-26`]: "2. Weihnachtstag"
-  };
-};
-
-const INITIAL_EMPLOYEES = [
-  { id: '1', name: 'Adams, Hendrik', role: 'Stationsleitung', status: '100%', prevOvertime: 0 },
-  { id: '2', name: 'Fuchsa, Jennifer', role: 'stellv. Leitung', status: '100%', prevOvertime: 0 },
-  { id: '3', name: 'Günter, Stephanie', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '4', name: 'Blank, Alexandra', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '5', name: 'Friedrich, Kristina', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '6', name: 'Weienberg, Hanna', role: 'Fachkraft', status: '100%', prevOvertime: 0 },
-  { id: '7', name: 'Hackmann, Matthias', role: 'Pflegekraft', status: '90%', prevOvertime: 0 },
-  { id: '8', name: 'Buchmüller, Jörg', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '9', name: 'Rösken, Katrin', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '10', name: 'Theißen, Jennifer', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '11', name: 'Daniels, Justin', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '12', name: 'Kaymaz, Melda', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '13', name: 'Kühn, Philipp', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '14', name: 'Strachanski, Julia', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '15', name: 'Preußner, Pauline', role: 'Azubi', status: '100%', prevOvertime: 0 },
-  { id: '16', name: 'Bielok, Lara', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '17', name: 'Wüstkamp, Bianca', role: 'Pflegekraft', status: '100%', prevOvertime: 0 },
-  { id: '18', name: 'Bondzau, Martina', role: 'Pflegekraft', status: '100%', prevOvertime: 0 }
-];
-
-const DEFAULT_SHIFTS = {
-  FD: { label: 'Frühdienst', color: 'bg-cyan-400', textColor: 'text-cyan-950', hours: 7.7 },
-  SD: { label: 'Spätdienst', color: 'bg-fuchsia-500', textColor: 'text-white', hours: 7.7 },
-  ZD: { label: 'Zwischendienst', color: 'bg-indigo-500', textColor: 'text-white', hours: 7.7 },
-  ND: { label: 'Nachtdienst', color: 'bg-orange-600', textColor: 'text-white', hours: 9.5 },
-  U:  { label: 'Urlaub', color: 'bg-yellow-400', textColor: 'text-yellow-950', hours: 7.7 },
-  K:  { label: 'Krank', color: 'bg-rose-500', textColor: 'text-white', hours: 7.7 },
-  LT: { label: 'Leitungstag', color: 'bg-emerald-400', textColor: 'text-emerald-950', hours: 7.7 },
-  X:  { label: 'Frei', color: 'bg-white/10', textColor: 'text-slate-500', hours: 0 }
-};
-
-const App = () => {
-  const [user, setUser] = useState(null);
-  const [employees, setEmployees] = useState(INITIAL_EMPLOYEES);
-  const [roster, setRoster] = useState({});
-  const [notes, setNotes] = useState({});
-  const [shifts, setShifts] = useState(DEFAULT_SHIFTS);
-  const [shiftOrder, setShiftOrder] = useState(Object.keys(DEFAULT_SHIFTS));
-  const [columnOrder, setColumnOrder] = useState(['status', 'soll', 'ist', 'diff', 'prev']);
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 3, 1));
-  const [activeShift, setActiveShift] = useState('FD');
-  const [isEditMode, setIsEditMode] = useState(false);
-  const [isInfoOpen, setIsInfoOpen] = useState(false);
-  const [isYearOpen, setIsYearOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [viewMode, setViewMode] = useState('month'); 
-  const [zoom, setZoom] = useState(1);
-  const [isDarkMode, setIsDarkMode] = useState(true);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [dragItem, setDragItem] = useState(null);
-
-  // --- Auth & Firestore ---
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dienstplan PRO - Helios Edition</title>
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Babel für JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
+        
+        body { 
+            font-family: 'Plus Jakarta Sans', sans-serif; 
+            background-color: #0a0f1d;
+            color: #e2e8f0;
+            margin: 0;
+            overflow-x: hidden;
         }
-      } catch (e) { console.error("Auth Fehler:", e); }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
 
-  useEffect(() => {
-    if (!user) return;
-    // Pfadregel beachten: /artifacts/{appId}/public/data/{collectionName}
-    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'plans', 'main');
-    const unsub = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.employees) setEmployees(data.employees);
-        if (data.roster) setRoster(data.roster);
-        if (data.notes) setNotes(data.notes);
-        if (data.shifts) setShifts(data.shifts);
-        if (data.shiftOrder) setShiftOrder(data.shiftOrder);
-        if (data.columnOrder) setColumnOrder(data.columnOrder);
-      }
-    }, (err) => console.error("Snapshot Fehler:", err));
-    return () => unsub();
-  }, [user]);
-
-  const saveToCloud = async () => {
-    if (!user) return;
-    setIsSyncing(true);
-    try {
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'plans', 'main');
-      await setDoc(docRef, {
-        employees, roster, notes, shifts, shiftOrder, columnOrder,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-    } catch (e) { console.error("Save fehlgeschlagen", e); }
-    setTimeout(() => setIsSyncing(false), 800);
-  };
-
-  // --- Logik ---
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth();
-  const holidays = useMemo(() => getHolidaysNRW(year), [year]);
-  
-  const calculateWorkingDays = (y, m) => {
-    const h = getHolidaysNRW(y);
-    let count = 0;
-    const d = new Date(y, m, 1);
-    while (d.getMonth() === m) {
-      const k = d.toISOString().split('T')[0];
-      if (d.getDay() !== 0 && d.getDay() !== 6 && !h[k]) count++;
-      d.setDate(d.getDate() + 1);
-    }
-    return count;
-  };
-  const workDays = useMemo(() => calculateWorkingDays(year, month), [year, month]);
-  const monthSollBase = workDays * 7.7;
-
-  const visibleDays = useMemo(() => {
-    const days = [];
-    const date = new Date(year, month, 1);
-    while (date.getMonth() === month) {
-      days.push(new Date(date));
-      date.setDate(date.getDate() + 1);
-    }
-    return viewMode === 'month' ? days : days.slice(0, 7);
-  }, [year, month, viewMode]);
-
-  const toggleShift = (empId, date) => {
-    if (!isEditMode) return;
-    const dateKey = date.toISOString().split('T')[0];
-    
-    if (activeShift === 'NOTE') {
-      const currentNote = (notes[empId] || {})[dateKey] || "";
-      const text = prompt("Notiz für den " + date.toLocaleDateString() + ":", currentNote);
-      if (text !== null) {
-        setNotes(prev => ({
-          ...prev,
-          [empId]: { ...(prev[empId] || {}), [dateKey]: text }
-        }));
-      }
-      return;
-    }
-
-    setRoster(prev => {
-      const empRoster = { ...(prev[empId] || {}) };
-      empRoster[dateKey] = empRoster[dateKey] === activeShift ? null : activeShift;
-      return { ...prev, [empId]: empRoster };
-    });
-  };
-
-  const getDayCounts = (date) => {
-    const key = date.toISOString().split('T')[0];
-    const counts = { FD: 0, SD: 0, ND: 0, ZD: 0 };
-    Object.values(roster).forEach(empRost => {
-      const s = empRost[key];
-      if (counts[s] !== undefined) counts[s]++;
-    });
-    return counts;
-  };
-
-  const handleDragStart = (e, type, index) => {
-    if (!isEditMode) return e.preventDefault();
-    setDragItem({ type, index });
-  };
-
-  const handleDragOver = (e) => e.preventDefault();
-
-  const handleDrop = (e, type, index) => {
-    if (!isEditMode || !dragItem || dragItem.type !== type) return;
-    if (type === 'employee') {
-      const list = [...employees];
-      const [moved] = list.splice(dragItem.index, 1);
-      list.splice(index, 0, moved);
-      setEmployees(list);
-    }
-    setDragItem(null);
-  };
-
-  return (
-    <div className={`min-h-screen ${isDarkMode ? 'bg-[#020617] text-slate-200' : 'bg-slate-50 text-slate-900'} font-sans p-2 md:p-4 overflow-hidden flex flex-col transition-all duration-300`}>
-      <header className={`flex flex-wrap items-center justify-between mb-4 bg-white/5 backdrop-blur-3xl border border-white/10 p-3 rounded-2xl no-print`}>
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-500 rounded-xl flex items-center justify-center">
-            <Calendar className="text-white" size={20} />
-          </div>
-          <div>
-            <h1 className="text-lg font-black tracking-tight leading-none">Dienstplan PRO</h1>
-            <div className="flex items-center gap-2 mt-1">
-              <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${isSyncing ? 'bg-blue-500/20 text-blue-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
-                {isSyncing ? 'Sync...' : 'Online'}
-              </span>
-              <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">{workDays} Arbeitstage</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <div className="flex items-center bg-black/40 p-1 rounded-xl border border-white/5">
-            <button onClick={() => setCurrentDate(new Date(year, month - 1, 1))} className="p-1 hover:bg-white/10 rounded-lg"><ChevronLeft size={16}/></button>
-            <div onClick={() => setIsYearOpen(true)} className="px-3 font-bold text-xs min-w-[120px] text-center uppercase tracking-wider cursor-pointer hover:text-blue-400 transition-colors">
-              {currentDate.toLocaleString('de-DE', { month: 'long', year: 'numeric' })}
-            </div>
-            <button onClick={() => setCurrentDate(new Date(year, month + 1, 1))} className="p-1 hover:bg-white/10 rounded-lg"><ChevronRight size={16}/></button>
-          </div>
-
-          <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-black/40 rounded-xl border border-white/5">
-            <Minimize size={14} className="text-slate-500"/>
-            <input type="range" min="0.5" max="1.5" step="0.05" value={zoom} onChange={(e) => setZoom(parseFloat(e.target.value))} className="w-20 h-1 appearance-none bg-blue-600/20 rounded-full cursor-pointer accent-blue-500" />
-            <Maximize size={14} className="text-slate-500"/>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 hover:bg-white/10 rounded-xl text-slate-400 transition-all">
-              {isDarkMode ? <Sun size={18}/> : <Moon size={18}/>}
-            </button>
-            <button 
-              onClick={() => setIsEditMode(!isEditMode)} 
-              className={`p-2 rounded-xl border transition-all ${isEditMode ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-lg' : 'bg-white/5 border-white/10 text-slate-400'}`}
-            >
-              {isEditMode ? <Unlock size={18} /> : <Lock size={18} />}
-            </button>
-            <button onClick={() => setIsSettingsOpen(true)} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-slate-400"><Settings size={18}/></button>
-            <button onClick={() => setIsInfoOpen(true)} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-blue-400"><Info size={18} /></button>
-            <button onClick={saveToCloud} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-black shadow-lg flex items-center gap-2 transition-all">
-              <Save size={14} className={isSyncing ? 'animate-spin' : ''}/> Sichern
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <div className="flex flex-1 gap-4 overflow-hidden relative">
-        <aside className="w-14 md:w-44 flex flex-col gap-3 overflow-y-auto no-scrollbar pb-20 no-print">
-          <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>
-            <p className="text-[10px] font-black text-slate-500 mb-3 uppercase hidden md:flex items-center gap-2"><Layout size={12}/> Palette</p>
-            <div className="flex flex-col gap-2">
-              <button 
-                onClick={() => setActiveShift('NOTE')}
-                className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${activeShift === 'NOTE' ? 'bg-amber-600/20 border-amber-600 scale-105 shadow-lg shadow-amber-600/10' : 'bg-black/20 border-white/5'}`}
-              >
-                <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center shadow-sm">
-                  <StickyNote className="text-amber-950" size={14}/>
-                </div>
-                <span className="text-[10px] font-black hidden md:block uppercase truncate">Notiz</span>
-              </button>
-              
-              {shiftOrder.map(key => {
-                const cfg = shifts[key];
-                return (
-                  <button key={key} onClick={() => setActiveShift(key)} className={`flex items-center gap-3 p-1.5 rounded-xl border transition-all ${activeShift === key ? 'bg-blue-600/20 border-blue-600 scale-105' : 'bg-black/20 border-white/5'}`}>
-                    <div className={`w-8 h-8 rounded-lg ${cfg.color} flex items-center justify-center shadow-sm`}>
-                      <span className={`text-[10px] font-black ${cfg.textColor}`}>{key}</span>
-                    </div>
-                    <span className="text-[10px] font-black hidden md:block uppercase truncate">{cfg.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <button onClick={() => setViewMode(viewMode === 'month' ? 'week' : 'month')} className="w-full py-3 bg-white/5 border border-white/10 rounded-xl flex flex-col items-center justify-center gap-1 hover:bg-white/10 transition-all text-slate-500">
-            {viewMode === 'month' ? <Monitor size={18}/> : <Smartphone size={18}/>}
-            <span className="text-[8px] font-black uppercase tracking-widest">{viewMode === 'month' ? 'Woche' : 'Monat'}</span>
-          </button>
-        </aside>
-
-        <main className={`flex-1 border rounded-2xl overflow-hidden flex flex-col shadow-2xl ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>
-          <div className="overflow-x-auto overflow-y-auto flex-1 custom-scrollbar" style={{ transform: `scale(${zoom})`, transformOrigin: 'top left', width: `${100/zoom}%`, height: `${100/zoom}%` }}>
-            <table className="w-full border-separate border-spacing-0">
-              <thead>
-                <tr className={`${isDarkMode ? 'bg-slate-900' : 'bg-slate-100'} sticky top-0 z-[70]`}>
-                  <th className={`p-3 text-left text-[10px] font-black border-b border-white/10 sticky left-0 z-[80] min-w-[160px] uppercase ${isDarkMode ? 'bg-slate-900' : 'bg-slate-100'}`}>Mitarbeiter</th>
-                  {columnOrder.map(key => (
-                    <th key={key} className="p-2 text-center text-[10px] font-black border-b border-white/10 uppercase">
-                      {key === 'status' ? 'VZ' : key === 'soll' ? 'Soll' : key === 'ist' ? 'Ist' : key === 'diff' ? '+/-' : 'Vmt'}
-                    </th>
-                  ))}
-                  {visibleDays.map(day => {
-                    const k = day.toISOString().split('T')[0];
-                    const counts = getDayCounts(day);
-                    const isH = !!holidays[k];
-                    const isW = day.getDay() === 0 || day.getDay() === 6;
-                    const lowStaff = (counts.FD < 3 || counts.SD < 3) && !isW;
-                    return (
-                      <th key={k} className={`p-2 border-b border-white/10 min-w-[55px] ${isH ? 'bg-amber-500/20' : isW ? 'bg-blue-500/10' : ''}`}>
-                        <div className="flex flex-col items-center relative">
-                          {lowStaff && <div className="absolute -top-1 -right-1 text-rose-500 animate-pulse"><AlertTriangle size={10}/></div>}
-                          <span className="text-[8px] uppercase font-bold opacity-50">{day.toLocaleDateString('de-DE', { weekday: 'short' })}</span>
-                          <span className={`text-xs font-black ${isH ? 'text-amber-400' : isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{day.getDate()}</span>
-                        </div>
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {employees.map((emp, rIdx) => {
-                  const empSoll = monthSollBase * (parseInt(emp.status) / 100);
-                  const empRost = roster[emp.id] || {};
-                  const empNotes = notes[emp.id] || {};
-                  const ist = Object.values(empRost).reduce((acc, code) => acc + (shifts[code]?.hours || 0), 0);
-                  const diff = ist - empSoll;
-                  return (
-                    <tr key={emp.id} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, 'employee', rIdx)} className="group transition-colors">
-                      <td draggable={isEditMode} onDragStart={(e) => handleDragStart(e, 'employee', rIdx)} className={`p-3 sticky left-0 z-40 border-r border-white/5 shadow-xl ${isDarkMode ? 'bg-[#0f172a]' : 'bg-white'} ${isEditMode ? 'cursor-move' : ''}`}>
-                        <div className="flex items-center gap-2">
-                          {isEditMode && <GripVertical size={12} className="text-slate-600"/>}
-                          <div onClick={() => isEditMode && prompt("Bearbeiten:", emp.name)}>
-                            <div className="font-black text-[11px] uppercase whitespace-nowrap">{emp.name}</div>
-                            <div className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter">{emp.role}</div>
-                          </div>
-                        </div>
-                      </td>
-                      {columnOrder.map(key => {
-                        if (key === 'status') return <td key={key} className="p-2 text-center text-[10px] font-bold text-slate-400 border-r border-white/5">{emp.status}</td>;
-                        if (key === 'soll') return <td key={key} className="p-2 text-center text-[10px] font-mono text-slate-500 border-r border-white/5">{empSoll.toFixed(0)}</td>;
-                        if (key === 'ist') return <td key={key} className="p-2 text-center text-[11px] font-black border-r border-white/5">{ist.toFixed(0)}</td>;
-                        if (key === 'diff') return <td key={key} className={`p-2 text-center text-[10px] font-black border-r border-white/5 ${diff >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{diff > 0 ? '+' : ''}{diff.toFixed(0)}</td>;
-                        if (key === 'prev') return <td key={key} className="p-2 text-center text-[10px] font-black text-blue-500 border-r border-white/5">{emp.prevOvertime}</td>;
-                        return null;
-                      })}
-                      {visibleDays.map(day => {
-                        const k = day.toISOString().split('T')[0];
-                        const s = empRost[k];
-                        const n = empNotes[k];
-                        const isH = !!holidays[k];
-                        return (
-                          <td key={k} onClick={() => toggleShift(emp.id, day)} className={`p-1 border-r border-white/[0.02] text-center ${isH ? 'bg-amber-500/5' : ''} ${isEditMode ? 'cursor-pointer' : 'cursor-default'}`}>
-                            <div className={`min-h-[44px] w-full rounded-lg flex flex-col items-center justify-center transition-all p-0.5 ${s ? `${shifts[s].color} ${shifts[s].textColor} shadow-lg scale-105` : 'hover:bg-white/5'}`}>
-                              <span className="text-[10px] font-black leading-none">{s || ''}</span>
-                              {n && <span className="text-[7px] font-bold leading-tight mt-1 opacity-100 uppercase line-clamp-2 break-all bg-black/20 rounded px-1 text-white shadow-sm">{n}</span>}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className={`${isDarkMode ? 'bg-slate-900' : 'bg-slate-100'} sticky bottom-0 z-[70] border-t border-white/10`}>
-                  <td className={`p-2 font-black text-[9px] uppercase sticky left-0 z-[80] ${isDarkMode ? 'bg-slate-900' : 'bg-slate-100'}`}>Summen (FD/SD/ND)</td>
-                  <td colSpan={columnOrder.length} className="border-r border-white/5"></td>
-                  {visibleDays.map(day => {
-                    const c = getDayCounts(day);
-                    return (
-                      <td key={day.getTime()} className="p-1 text-center text-[8px] font-black border-r border-white/5">
-                        <div className="flex flex-col gap-0.5">
-                          <span className="text-cyan-400">{c.FD}</span>
-                          <span className="text-fuchsia-500">{c.SD}</span>
-                          <span className="text-orange-500">{c.ND}</span>
-                        </div>
-                      </td>
-                    );
-                  })}
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </main>
-      </div>
-
-      {/* Jahr Modal */}
-      {isYearOpen && (
-        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsYearOpen(false)}></div>
-          <div className="relative bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-2xl p-8 animate-in zoom-in duration-300">
-            <h2 className="text-2xl font-black mb-6 flex items-center gap-3"><Calendar className="text-blue-500" /> Jahresübersicht {year}</h2>
-            <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
-              {[...Array(12)].map((_, i) => (
-                <button key={i} onClick={() => { setCurrentDate(new Date(year, i, 1)); setIsYearOpen(false); }} className={`p-4 rounded-2xl font-black text-xs uppercase border transition-all ${month === i ? 'bg-blue-600 border-blue-400 text-white shadow-lg' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>
-                  {new Date(year, i, 1).toLocaleString('de-DE', { month: 'long' })}
-                </button>
-              ))}
-            </div>
-            <button onClick={() => setIsYearOpen(false)} className="mt-8 w-full py-4 bg-white/5 rounded-2xl font-black uppercase text-xs">Schließen</button>
-          </div>
-        </div>
-      )}
-
-      {/* Einstellungen Modal */}
-      {isSettingsOpen && (
-        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsSettingsOpen(false)}></div>
-          <div className="relative bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-lg p-8 animate-in zoom-in duration-300 shadow-2xl">
-            <h2 className="text-2xl font-black mb-6 flex items-center gap-3"><Settings className="text-slate-400" /> Einstellungen</h2>
-            <div className="space-y-6">
-              <div>
-                <p className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Kollegen Management</p>
-                <button onClick={() => { const n = prompt("Name, Vorname:"); if (n) setEmployees([...employees, { id: Date.now().toString(), name: n, role: 'Pflegekraft', status: '100%', prevOvertime: 0 }]); }} className="w-full py-3 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-2xl font-black text-xs uppercase flex items-center justify-center gap-2">
-                  <UserPlus size={14}/> Neuen Kollegen anlegen
-                </button>
-              </div>
-              <div>
-                <p className="text-[10px] font-black uppercase text-slate-500 mb-2 tracking-widest">Spalten-Filter</p>
-                <div className="flex flex-wrap gap-2">
-                  {['status', 'soll', 'ist', 'diff', 'prev'].map(key => (
-                    <button key={key} onClick={() => setColumnOrder(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])} className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase border transition-all ${columnOrder.includes(key) ? 'bg-blue-600 border-blue-400' : 'bg-white/5 border-white/10 opacity-40'}`}>
-                      {key}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <button onClick={() => setIsSettingsOpen(false)} className="mt-8 w-full py-4 bg-white/5 rounded-2xl font-black uppercase text-xs">Schließen</button>
-          </div>
-        </div>
-      )}
-
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 5px; height: 5px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 12px; width: 12px; border-radius: 50%; background: #3b82f6; cursor: pointer; border: 2px solid #fff; }
-        @media print {
-          body { background: white !important; color: black !important; padding: 0 !important; }
-          header, aside, .no-print, tfoot { display: none !important; }
-          main { border: none !important; width: 100vw !important; transform: scale(1) !important; }
-          table { width: 100% !important; border-collapse: collapse !important; font-size: 7pt; }
-          td, th { border: 0.1pt solid #ccc !important; color: black !important; background: white !important; }
-        }
-      `}</style>
-    </div>
-  );
-};
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
 
-export default App;
+        input[type=range]::-webkit-slider-thumb { 
+            -webkit-appearance: none; 
+            height: 18px; width: 18px; 
+            border-radius: 50%; 
+            background: #3b82f6; 
+            cursor: pointer; 
+            border: 3px solid #0f172a; 
+            box-shadow: 0 0 15px rgba(59,130,246,0.5); 
+        }
+
+        .glass-effect {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .shift-cell {
+            min-height: 48px;
+            transition: all 0.2s ease;
+        }
+
+        @media print { 
+            .no-print { display: none !important; } 
+            table { font-size: 7pt; border-collapse: collapse !important; width: 100% !important; } 
+            td, th { border: 0.1pt solid #ccc !important; color: black !important; background: white !important; } 
+            body { background: white; color: black; }
+            .print-only { display: block !important; }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // --- Firebase Konfiguration ---
+        const userFirebaseConfig = {
+            apiKey: "AIzaSyD3HcZOIv6Wyg3_5xoBnSnz-Eb4fgLr0SA",
+            authDomain: "dienstplanprogramm.firebaseapp.com",
+            projectId: "dienstplanprogramm",
+            storageBucket: "dienstplanprogramm.firebasestorage.app",
+            messagingSenderId: "193664964493",
+            appId: "1:193664964493:web:e99e822739cb13c8df0fc4"
+        };
+
+        const config = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : userFirebaseConfig;
+
+        if (!firebase.apps.length) {
+            firebase.initializeApp(config);
+        }
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'helios-notaufnahme-duisburg';
+
+        // Stabilere Icon-Komponente
+        const Icon = ({ name, size = 18, className = "" }) => {
+            return <i data-lucide={name} style={{ width: size, height: size }} className={`inline-flex items-center justify-center ${className}`}></i>;
+        };
+
+        const getHolidaysNRW = (year) => {
+            const f = Math.floor, G = year % 19, C = f(year / 100), H = (C - f(C / 4) - f((8 * C + 13) / 25) + 19 * G + 15) % 30, 
+                  I = H - f(H / 28) * (1 - f(29 / (H + 1)) * f((21 - G) / 11)), 
+                  J = (year + f(year / 4) + I + 2 - C + f(C / 4)) % 7, 
+                  L = I - J, month = 3 + f((L + 40) / 44), day = L + 28 - 31 * f(month / 4);
+            const easter = new Date(year, month - 1, day);
+            const add = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r.toISOString().split('T')[0]; };
+            return {
+                [`${year}-01-01`]: "Neujahr", [add(easter, -2)]: "Karfreitag", [add(easter, 1)]: "Ostermontag",
+                [`${year}-05-01`]: "Tag der Arbeit", [add(easter, 39)]: "Christi Himmelfahrt",
+                [add(easter, 50)]: "Pfingstmontag", [add(easter, 60)]: "Fronleichnam",
+                [`${year}-10-03`]: "Tag der Dt. Einheit", [`${year}-11-01`]: "Allerheiligen",
+                [`${year}-12-25`]: "1. Weihnachtstag", [`${year}-12-26`]: "2. Weihnachtstag"
+            };
+        };
+
+        const INITIAL_EMPLOYEES = [
+            { id: '1', name: 'Adams, Hendrik', role: 'Stationsleitung', status: '100', prevOvertime: 0 },
+            { id: '2', name: 'Fuchsa, Jennifer', role: 'stellv. Leitung', status: '100', prevOvertime: 0 },
+            { id: '3', name: 'Günter, Stephanie', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '4', name: 'Blank, Alexandra', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '5', name: 'Friedrich, Kristina', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '6', name: 'Weienberg, Hanna', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '7', name: 'Hackmann, Matthias', role: 'Pflegekraft', status: '90', prevOvertime: 0 },
+            { id: '8', name: 'Buchmüller, Jörg', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '9', name: 'Rösken, Katrin', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '10', name: 'Theißen, Jennifer', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '11', name: 'Daniels, Justin', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '12', name: 'Kaymaz, Melda', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '13', name: 'Kühn, Philipp', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '14', name: 'Strachanski, Julia', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '15', name: 'Preußner, Pauline', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '16', name: 'Bielok, Lara', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '17', name: 'Wüstkamp, Bianca', role: 'Pflegekraft', status: '100', prevOvertime: 0 },
+            { id: '18', name: 'Bondzau, Martina', role: 'Pflegekraft', status: '100', prevOvertime: 0 }
+        ];
+
+        const DEFAULT_SHIFTS = {
+            FD: { label: 'Frühdienst', color: 'bg-cyan-500', textColor: 'text-cyan-950', hours: 7.7 },
+            SD: { label: 'Spätdienst', color: 'bg-fuchsia-600', textColor: 'text-white', hours: 7.7 },
+            ZD: { label: 'Zwischendienst', color: 'bg-indigo-600', textColor: 'text-white', hours: 7.7 },
+            ND: { label: 'Nachtdienst', color: 'bg-orange-600', textColor: 'text-white', hours: 9.5 },
+            U:  { label: 'Urlaub', color: 'bg-amber-400', textColor: 'text-amber-950', hours: 7.7 },
+            K:  { label: 'Krank', color: 'bg-rose-600', textColor: 'text-white', hours: 7.7 },
+            LT: { label: 'Leitungstag', color: 'bg-emerald-500', textColor: 'text-emerald-950', hours: 7.7 },
+            X:  { label: 'Frei', color: 'bg-slate-700/30', textColor: 'text-slate-500', hours: 0 }
+        };
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [employees, setEmployees] = useState(INITIAL_EMPLOYEES);
+            const [roster, setRoster] = useState({});
+            const [notes, setNotes] = useState({});
+            const [currentDate, setCurrentDate] = useState(new Date(2026, 3, 1));
+            const [activeShift, setActiveShift] = useState('FD');
+            const [isEditMode, setIsEditMode] = useState(false);
+            const [zoom, setZoom] = useState(1);
+            const [isSyncing, setIsSyncing] = useState(false);
+            const [editingEmp, setEditingEmp] = useState(null);
+
+            // Icon Refresh
+            useEffect(() => {
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                }
+            });
+
+            useEffect(() => {
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await auth.signInWithCustomToken(__initial_auth_token).catch(() => auth.signInAnonymously());
+                    } else {
+                        await auth.signInAnonymously();
+                    }
+                };
+                initAuth();
+                return auth.onAuthStateChanged(setUser);
+            }, []);
+
+            useEffect(() => {
+                if (!user) return;
+                const docRef = db.doc(`artifacts/${appId}/public/data/plans/main`);
+                return docRef.onSnapshot((docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        if (data.employees) setEmployees(data.employees);
+                        if (data.roster) setRoster(data.roster);
+                        if (data.notes) setNotes(data.notes);
+                    }
+                });
+            }, [user]);
+
+            const saveToCloud = async () => {
+                if (!user) return;
+                setIsSyncing(true);
+                try {
+                    const docRef = db.doc(`artifacts/${appId}/public/data/plans/main`);
+                    await docRef.set({
+                        employees, roster, notes,
+                        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true });
+                } catch (e) { console.error("Cloud Error", e); }
+                setTimeout(() => setIsSyncing(false), 800);
+            };
+
+            const year = currentDate.getFullYear();
+            const month = currentDate.getMonth();
+            const holidays = useMemo(() => getHolidaysNRW(year), [year]);
+            
+            const calculateWorkingDays = (y, m) => {
+                const h = getHolidaysNRW(y);
+                let count = 0;
+                const d = new Date(y, m, 1);
+                while (d.getMonth() === m) {
+                    const k = d.toISOString().split('T')[0];
+                    if (d.getDay() !== 0 && d.getDay() !== 6 && !h[k]) count++;
+                    d.setDate(d.getDate() + 1);
+                }
+                return count;
+            };
+            const workDays = calculateWorkingDays(year, month);
+            const monthSollBase = workDays * 7.7;
+
+            const daysInMonth = useMemo(() => {
+                const days = [];
+                const d = new Date(year, month, 1);
+                while (d.getMonth() === month) {
+                    days.push(new Date(d));
+                    d.setDate(d.getDate() + 1);
+                }
+                return days;
+            }, [year, month]);
+
+            const toggleShift = (empId, date) => {
+                if (!isEditMode) return;
+                const dateKey = date.toISOString().split('T')[0];
+                
+                if (activeShift === 'NOTE') {
+                    const currentNote = (notes[empId] || {})[dateKey] || "";
+                    const text = prompt(`Notiz für ${date.toLocaleDateString()}:`, currentNote);
+                    if (text !== null) {
+                        setNotes(prev => {
+                            const empNotes = { ...(prev[empId] || {}) };
+                            if (text === "") delete empNotes[dateKey];
+                            else empNotes[dateKey] = text;
+                            return { ...prev, [empId]: empNotes };
+                        });
+                    }
+                } else {
+                    setRoster(prev => {
+                        const empRost = { ...(prev[empId] || {}) };
+                        const current = empRost[dateKey];
+                        empRost[dateKey] = current === activeShift ? null : activeShift;
+                        return { ...prev, [empId]: empRost };
+                    });
+                }
+            };
+
+            const updateEmployeeData = (id, field, value) => {
+                setEmployees(prev => prev.map(e => e.id === id ? { ...e, [field]: value } : e));
+            };
+
+            const getDayCounts = (date) => {
+                const key = date.toISOString().split('T')[0];
+                const counts = { FD: 0, SD: 0, ND: 0 };
+                Object.values(roster).forEach(empRost => {
+                    const s = empRost[key];
+                    if (counts[s] !== undefined) counts[s]++;
+                });
+                return counts;
+            };
+
+            return (
+                <div className="min-h-screen p-2 md:p-6 flex flex-col h-screen max-h-screen overflow-hidden">
+                    {/* Header */}
+                    <header className="flex items-center justify-between mb-4 glass-effect p-4 rounded-[24px] no-print shrink-0">
+                        <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
+                                <Icon name="calendar" className="text-white" />
+                            </div>
+                            <div>
+                                <h1 className="text-lg font-black uppercase tracking-tighter leading-none">Dienstplan PRO</h1>
+                                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{workDays} AT ({monthSollBase.toFixed(1)}h Soll)</span>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center gap-6">
+                            <div className="flex items-center bg-black/40 p-1.5 rounded-xl border border-white/5">
+                                <button onClick={() => setCurrentDate(new Date(year, month - 1, 1))} className="p-1 hover:bg-white/10 rounded-lg"><Icon name="chevron-left" size={16}/></button>
+                                <div className="px-4 font-bold text-xs min-w-[140px] text-center uppercase tracking-widest">{currentDate.toLocaleString('de-DE', { month: 'long', year: 'numeric' })}</div>
+                                <button onClick={() => setCurrentDate(new Date(year, month + 1, 1))} className="p-1 hover:bg-white/10 rounded-lg"><Icon name="chevron-right" size={16}/></button>
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                                <Icon name="minimize" size={14} className="text-slate-500" />
+                                <input type="range" min="0.5" max="1.5" step="0.01" value={zoom} onChange={(e) => setZoom(parseFloat(e.target.value))} className="w-32 h-1 appearance-none bg-blue-600/20 rounded-full cursor-pointer accent-blue-500" />
+                                <Icon name="maximize" size={14} className="text-slate-500" />
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <button onClick={() => setIsEditMode(!isEditMode)} className={`p-2 rounded-xl border transition-all ${isEditMode ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400' : 'bg-white/5 border-white/10 text-slate-400'}`}>
+                                    <Icon name={isEditMode ? "unlock" : "lock"} />
+                                </button>
+                                <button onClick={saveToCloud} className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-black shadow-lg shadow-blue-600/20 flex items-center gap-2 active:scale-95 text-white transition-all uppercase tracking-widest">
+                                    <Icon name="save" size={14} className={isSyncing ? 'animate-spin' : ''}/> Sichern
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+
+                    <div className="flex flex-1 gap-4 overflow-hidden relative">
+                        {/* Sidebar Palette */}
+                        <aside className="w-14 md:w-48 flex flex-col gap-3 no-print shrink-0 overflow-y-auto custom-scrollbar">
+                            <div className="p-3 rounded-[24px] border bg-white/5 border-white/10 shadow-xl">
+                                <p className="text-[10px] font-black text-slate-500 mb-3 uppercase tracking-widest hidden md:block">Werkzeuge</p>
+                                <div className="flex flex-col gap-2">
+                                    <button onClick={() => setActiveShift('NOTE')} className={`flex items-center gap-3 p-2 rounded-xl border transition-all ${activeShift === 'NOTE' ? 'bg-amber-600/20 border-amber-600 scale-105 shadow-lg' : 'bg-black/20 border-white/5 hover:border-white/10'}`}>
+                                        <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center text-amber-950"><Icon name="sticky-note" size={14}/></div>
+                                        <span className="text-[10px] font-black hidden md:block uppercase tracking-wider">Notiz</span>
+                                    </button>
+                                    <div className="h-px bg-white/5 my-1"></div>
+                                    {Object.entries(DEFAULT_SHIFTS).map(([key, cfg]) => (
+                                        <button key={key} onClick={() => setActiveShift(key)} className={`flex items-center gap-3 p-2 rounded-xl border transition-all ${activeShift === key ? 'bg-blue-600/20 border-blue-600 scale-105 shadow-lg shadow-blue-600/20' : 'bg-black/20 border-white/5 hover:border-white/10'}`}>
+                                            <div className={`w-8 h-8 rounded-lg ${cfg.color} flex items-center justify-center text-[10px] font-black ${cfg.textColor}`}>{key}</div>
+                                            <span className="text-[10px] font-black hidden md:block uppercase truncate">{cfg.label}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <button onClick={() => window.print()} className="w-full py-4 glass-effect rounded-2xl flex flex-col items-center gap-2 hover:bg-white/10 transition-all text-slate-400">
+                                <Icon name="printer" size={20} />
+                                <span className="text-[8px] font-black uppercase tracking-widest text-center">Plan drucken</span>
+                            </button>
+                        </aside>
+
+                        {/* Main Grid Area */}
+                        <main className="flex-1 glass-effect rounded-[24px] overflow-hidden flex flex-col shadow-2xl relative">
+                            <div className="overflow-x-auto overflow-y-auto flex-1 custom-scrollbar relative">
+                                <div style={{ transform: `scale(${zoom})`, transformOrigin: 'top left', width: `${100/zoom}%` }}>
+                                    <table className="w-full border-separate border-spacing-0">
+                                        <thead>
+                                            <tr className="bg-[#0f172a] sticky top-0 z-[70] backdrop-blur-md">
+                                                <th className="p-3 text-left text-[10px] font-black border-b border-white/10 sticky left-0 z-[80] min-w-[200px] uppercase bg-[#0f172a] shadow-[5px_0_10px_rgba(0,0,0,0.3)]">Mitarbeiter</th>
+                                                <th className="p-2 text-center text-[9px] font-black border-b border-white/10 uppercase text-slate-500 tracking-widest bg-[#0f172a]">VZ%</th>
+                                                <th className="p-2 text-center text-[9px] font-black border-b border-white/10 uppercase text-slate-500 tracking-widest bg-[#0f172a]">Soll</th>
+                                                <th className="p-2 text-center text-[9px] font-black border-b border-white/10 uppercase text-slate-500 tracking-widest bg-[#0f172a]">Ist</th>
+                                                <th className="p-2 text-center text-[9px] font-black border-b border-white/10 uppercase text-slate-500 tracking-widest bg-[#0f172a]">+/-</th>
+                                                <th className="p-2 text-center text-[9px] font-black border-b border-white/10 uppercase text-blue-500 tracking-widest bg-[#0f172a]">Vmt</th>
+                                                {daysInMonth.map(day => {
+                                                    const k = day.toISOString().split('T')[0];
+                                                    const counts = getDayCounts(day);
+                                                    const isH = !!holidays[k];
+                                                    const isW = day.getDay() === 0 || day.getDay() === 6;
+                                                    // Warnung unter 2 Personen
+                                                    const lowStaff = (counts.FD < 2 || counts.SD < 2 || counts.ND < 2);
+                                                    return (
+                                                        <th key={k} className={`p-2 border-b border-white/10 min-w-[70px] ${isH ? 'bg-amber-500/20' : isW ? 'bg-blue-600/10' : ''}`}>
+                                                            <div className="flex flex-col items-center relative py-1">
+                                                                {lowStaff && <div className="absolute -top-1 -right-1 text-rose-500 animate-pulse"><Icon name="alert-triangle" size={12}/></div>}
+                                                                <span className="text-[8px] uppercase font-bold opacity-40">{day.toLocaleDateString('de-DE', { weekday: 'short' })}</span>
+                                                                <span className={`text-sm font-black ${isH ? 'text-amber-400' : 'text-slate-200'}`}>{day.getDate()}</span>
+                                                            </div>
+                                                        </th>
+                                                    );
+                                                })}
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-white/5">
+                                            {employees.map(emp => {
+                                                const empSoll = monthSollBase * (parseFloat(emp.status) / 100);
+                                                const empRost = roster[emp.id] || {};
+                                                const empNotes = notes[emp.id] || {};
+                                                const ist = Object.values(empRost).reduce((acc, code) => acc + (DEFAULT_SHIFTS[code]?.hours || 0), 0);
+                                                const diff = ist - empSoll;
+                                                return (
+                                                    <tr key={emp.id} className="hover:bg-white/[0.02] transition-colors group">
+                                                        <td className="p-3 sticky left-0 z-40 border-r border-white/5 bg-[#0f172a] cursor-pointer shadow-[5px_0_10px_rgba(0,0,0,0.3)]" onClick={() => setEditingEmp(emp)}>
+                                                            <div className="flex items-center gap-2">
+                                                                {isEditMode && <Icon name="grip-vertical" size={12} className="text-slate-600" />}
+                                                                <div>
+                                                                    <div className="font-black text-[11px] uppercase tracking-tight leading-none group-hover:text-blue-400 transition-colors whitespace-nowrap">{emp.name}</div>
+                                                                    <div className="text-[8px] text-slate-500 font-bold uppercase mt-1 opacity-70">{emp.role}</div>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-2 text-center text-[10px] font-bold text-slate-400 border-r border-white/5">{emp.status}%</td>
+                                                        <td className="p-2 text-center text-[10px] font-mono text-slate-500 border-r border-white/5">{empSoll.toFixed(0)}</td>
+                                                        <td className="p-2 text-center text-[11px] font-black border-r border-white/5">{ist.toFixed(0)}</td>
+                                                        <td className={`p-2 text-center text-[10px] font-black border-r border-white/5 ${diff >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>{diff.toFixed(0)}</td>
+                                                        <td className="p-2 text-center text-[10px] font-black text-blue-500 border-r border-white/5">{emp.prevOvertime}</td>
+                                                        {daysInMonth.map(day => {
+                                                            const k = day.toISOString().split('T')[0];
+                                                            const s = empRost[k];
+                                                            const n = empNotes[k];
+                                                            const isH = !!holidays[k];
+                                                            return (
+                                                                <td key={k} onClick={() => toggleShift(emp.id, day)} className={`p-1 border-r border-white/[0.02] transition-all ${isEditMode ? 'cursor-pointer hover:bg-white/10' : ''} ${isH ? 'bg-amber-500/5' : ''}`}>
+                                                                    <div className={`shift-cell rounded-lg flex flex-col items-center justify-center transition-all ${s ? `${DEFAULT_SHIFTS[s].color} ${DEFAULT_SHIFTS[s].textColor} shadow-lg scale-105 border border-white/10` : 'group-hover:bg-white/5'}`}>
+                                                                        <span className="text-[10px] font-black leading-none">{s || ''}</span>
+                                                                        {n && <span className="text-[7px] font-bold leading-tight mt-1 bg-black/50 rounded-sm px-1 text-white border border-white/10 line-clamp-2 max-w-[65px] text-center">{n}</span>}
+                                                                    </div>
+                                                                </td>
+                                                            );
+                                                        })}
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                        <tfoot>
+                                            <tr className="bg-[#0f172a] sticky bottom-0 z-[70] border-t border-white/10 backdrop-blur-md shadow-[0_-5px_15px_rgba(0,0,0,0.5)]">
+                                                <td className="p-3 font-black text-[9px] uppercase sticky left-0 z-[80] bg-[#0f172a] tracking-widest shadow-[5px_0_10px_rgba(0,0,0,0.3)]">Besetzung (FD/SD/ND)</td>
+                                                <td colSpan="5" className="border-r border-white/5 bg-[#0f172a]"></td>
+                                                {daysInMonth.map(day => {
+                                                    const c = getDayCounts(day);
+                                                    return (
+                                                        <td key={day.getTime()} className="p-1 text-center text-[10px] font-black border-r border-white/5">
+                                                            <div className="flex flex-col gap-0.5 py-1">
+                                                                <span className="text-cyan-400">{c.FD}</span>
+                                                                <span className="text-fuchsia-400">{c.SD}</span>
+                                                                <span className="text-orange-400">{c.ND}</span>
+                                                            </div>
+                                                        </td>
+                                                    );
+                                                })}
+                                            </tr>
+                                        </tfoot>
+                                    </table>
+                                </div>
+                            </div>
+                        </main>
+                    </div>
+
+                    {/* Employee & Overtime Edit Modal */}
+                    {editingEmp && (
+                        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
+                            <div className="absolute inset-0 bg-black/95 backdrop-blur-sm" onClick={() => setEditingEmp(null)}></div>
+                            <div className="relative bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-md p-8 shadow-2xl animate-in zoom-in duration-200">
+                                <div className="flex items-center justify-between mb-8">
+                                    <h2 className="text-xl font-black uppercase tracking-tighter flex items-center gap-3">
+                                        <Icon name="settings" className="text-blue-500" size={24}/> {editingEmp.name}
+                                    </h2>
+                                    <button onClick={() => setEditingEmp(null)} className="p-2 hover:bg-white/10 rounded-full text-slate-500 transition-colors">
+                                        <Icon name="x" />
+                                    </button>
+                                </div>
+                                <div className="space-y-6">
+                                    <div>
+                                        <label className="text-[10px] font-black text-slate-500 uppercase mb-2 block tracking-widest">Arbeitszeit-Prozent (%)</label>
+                                        <input 
+                                            type="number" 
+                                            value={editingEmp.status} 
+                                            onChange={(e) => updateEmployeeData(editingEmp.id, 'status', e.target.value)} 
+                                            className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white font-black outline-none focus:border-blue-500 transition-all text-xl" 
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-black text-slate-500 uppercase mb-2 block tracking-widest">Überstunden Vormonat (h)</label>
+                                        <input 
+                                            type="number" 
+                                            value={editingEmp.prevOvertime} 
+                                            onChange={(e) => updateEmployeeData(editingEmp.id, 'prevOvertime', e.target.value)} 
+                                            className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-blue-400 font-black outline-none focus:border-blue-500 transition-all text-xl" 
+                                        />
+                                    </div>
+                                    <button onClick={() => setEditingEmp(null)} className="w-full py-5 bg-blue-600 hover:bg-blue-500 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-blue-600/30 active:scale-95 transition-all text-white mt-4">Speichern</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <style>{`
+                        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+                        .animate-pulse { animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+                        
+                        input[type=range]::-webkit-slider-runnable-track {
+                            width: 100%;
+                            height: 4px;
+                            cursor: pointer;
+                            background: rgba(255, 255, 255, 0.1);
+                            border-radius: 2px;
+                        }
+                    `}</style>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
